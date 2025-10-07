@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException
-from typing import List
+from fastapi import APIRouter, HTTPException, Query
+from typing import List, Optional
 
 from ..services.aws import get_critical_high_vulnerabilities
 from ..services.llm import suggest_remediation
@@ -14,16 +14,54 @@ router = APIRouter(prefix="/vulnerabilities", tags=["vulnerabilities"])
 
 
 @router.get("/", response_model=List[VulnerabilityFinding])
-def list_vulnerabilities():
-    logger.info("GET /vulnerabilities endpoint called")
+def list_vulnerabilities(
+    severity: Optional[List[str]] = Query(
+        None,
+        description="List or comma-separated severities to include (e.g. severity=HIGH or severity=HIGH,CRITICAL). Case-insensitive."
+    ),
+    env: Optional[str] = Query(None, description="Environment filter (currently informational)"),
+    release_id: Optional[str] = Query(None, description="Release/build filter (currently informational)"),
+    timeframe: Optional[str] = Query(None, description="Timeframe filter (currently informational)"),
+    repo: Optional[str] = Query(None, description="Repository filter (currently informational)"),
+    image: Optional[str] = Query(None, description="Image filter (currently informational)"),
+):
+    """
+    List vulnerabilities. Supports severity filtering via a comma-separated string.
+    Other filters are accepted for forward-compatibility but not yet applied here.
+    """
+    logger.info(
+        "GET /vulnerabilities called with params: severity=%s, env=%s, release_id=%s, timeframe=%s, repo=%s, image=%s",
+        severity, env, release_id, timeframe, repo, image
+    )
+
+    # Fetch current findings (service currently returns CRITICAL/HIGH only)
     vulnerabilities = get_critical_high_vulnerabilities()
-    logger.info(f"Retrieved {len(vulnerabilities)} vulnerabilities")
+    logger.info("Retrieved %d vulnerabilities before filtering", len(vulnerabilities))
+
+    logger.info(f"Incoming query raw severity={severity}")
+
+    # Apply severity filtering if provided
+    if severity:
+        try:
+            requested = set()
+            for s in severity:
+                requested.update([part.strip().upper() for part in s.split(",") if part.strip()])
+
+            before = len(vulnerabilities)
+            vulnerabilities = [
+                v for v in vulnerabilities
+                if (v.severity or "").upper() in requested
+            ]
+            logger.info("Applied severity filter %s: %d → %d", requested, before, len(vulnerabilities))
+        except Exception as e:
+            logger.warning("Failed to parse/apply severity filter '%s': %s", severity, e)
+
     return vulnerabilities
 
 
 @router.post("/suggest", response_model=SuggestionResponse)
 def suggest(vuln: VulnerabilityInput):
-    logger.info(f"POST /vulnerabilities/suggest endpoint called for vulnerability: {vuln.name}")
+    logger.info("POST /vulnerabilities/suggest endpoint called for vulnerability: %s", vuln.name)
     
     # load requirements if available
     req_text = None
@@ -31,9 +69,9 @@ def suggest(vuln: VulnerabilityInput):
         try:
             with open(settings.requirements_path, "r", encoding="utf-8") as f:
                 req_text = f.read()[:5000]
-            logger.info(f"Loaded requirements from {settings.requirements_path}")
+            logger.info("Loaded requirements from %s", settings.requirements_path)
         except FileNotFoundError:
-            logger.info(f"Requirements file not found at {settings.requirements_path}")
+            logger.info("Requirements file not found at %s", settings.requirements_path)
             req_text = None
     
     # Get NVD data for enhanced suggestions
@@ -62,7 +100,7 @@ def suggest(vuln: VulnerabilityInput):
         }
         logger.info("NVD data retrieved successfully")
     except Exception as e:
-        logger.warning(f"NVD data lookup failed: {str(e)}, continuing without NVD data")
+        logger.warning("NVD data lookup failed: %s, continuing without NVD data", str(e))
         # Continue without NVD data if lookup fails
         pass
     
@@ -76,8 +114,8 @@ def suggest(vuln: VulnerabilityInput):
             requirements_text=req_text,
             nvd_data=nvd_data
         )
-        logger.info(f"Remediation suggestion generated successfully, length: {len(suggestion)} characters")
+        logger.info("Remediation suggestion generated successfully, length: %d characters", len(suggestion))
         return SuggestionResponse(suggestion=suggestion)
     except Exception as e:
-        logger.error(f"Error generating remediation suggestion: {str(e)}")
+        logger.error("Error generating remediation suggestion: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))

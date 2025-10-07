@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from .config import settings
@@ -10,6 +11,18 @@ from .scheduler import scheduler
 from .utils import get_logger
 
 logger = get_logger(__name__)
+
+# ------------------------------------------------------------
+# ✅ Enable CORS (for frontend running on localhost:5173/5175)
+# ------------------------------------------------------------
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",   # Vite default
+    "http://localhost:5174",
+    "http://localhost:5175",   # your current dev port
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175",
+]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -84,6 +97,14 @@ app = FastAPI(
     version="0.1.0",
     description="Log Analytics Dashboard with Vulnerability Scanning and AI Insights",
     lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],   # or restrict to ["GET", "POST"]
+    allow_headers=["*"],
 )
 
 # Include routers
