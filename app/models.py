@@ -24,6 +24,14 @@ class VulnerabilityFinding(BaseModel):
     nvd_last_modified: Optional[str] = None
     nvd_vendor_comments: Optional[str] = None
     nvd_references: Optional[list] = None
+    repo: Optional[str] = None
+    image: Optional[str] = None
+    release_id: Optional[str] = None
+    first_seen_build: Optional[str] = None
+    first_seen_time: Optional[str] = None  # ISO string (UTC is fine)
+    fixed_version: Optional[str] = None
+    class Config:
+        extra = "ignore"
 
 class VulnerabilityInput(BaseModel):
     name: str
