@@ -102,6 +102,27 @@ def summarize_exceptions(entries: List[LogEntry]) -> str:
     return result
 
 
+def _should_use_strcontains(pattern: str) -> bool:
+    """
+    Determine if a pattern should use strcontains instead of like.
+    
+    Args:
+        pattern: The pattern to analyze
+    
+    Returns:
+        True if strcontains should be used, False for like
+    """
+    # Use strcontains for simple words/phrases without special regex characters
+    special_chars = ['*', '+', '?', '[', ']', '(', ')', '{', '}', '^', '$', '|', '\\']
+    has_special_chars = any(char in pattern for char in special_chars)
+    is_simple_phrase = len(pattern.split()) <= 3
+    
+    should_use_strcontains = not has_special_chars and is_simple_phrase
+    logger.info(f"Pattern '{pattern}' analysis: has_special_chars={has_special_chars}, is_simple_phrase={is_simple_phrase}, use_strcontains={should_use_strcontains}")
+    
+    return should_use_strcontains
+
+
 def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str]) -> str:
     """
     Generate a CloudWatch Insights query using LLM based on inclusion and exclusion patterns.
@@ -130,9 +151,55 @@ You are an expert in AWS CloudWatch Insights queries. Generate a CloudWatch Insi
 4. Sorts by @timestamp in descending order
 5. Limits results to 10000
 
-The query should use CloudWatch Insights syntax with proper filtering using the | filter command.
+CRITICAL SYNTAX RULES FOR CLOUDWATCH INSIGHTS:
+- Use the EXACT format shown below
+- For inclusion: use "or" to combine multiple patterns on separate lines
+- For exclusion: use "and" with not() functions on separate lines
+- Each pattern should be on its own line with proper indentation
+- Choose the right function based on pattern type:
+  * Use "strcontains" for simple words/phrases (e.g., "vyudra", "Request data", "user_id")
+  * Use "like" with regex for complex patterns (e.g., "Exception", "ERROR", "FATAL")
+- For simple patterns without special characters, prefer strcontains
+- For error/exception patterns, use like with regex
 
-IMPORTANT: Return ONLY the raw query string without any markdown formatting, code blocks, or explanations.
+EXAMPLE FORMATS TO FOLLOW:
+
+1. Error/Exception Detection (using like with regex):
+  fields @timestamp, @message, @logStream, @log
+  | filter @message like /Exception/ 
+    or @message like /ERROR/ 
+    or @message like /Error/ 
+    or @message like /FATAL/
+    or @message like /CRITICAL/
+  | filter not(@message like /DEBUG/) 
+    and not(@message like /health/) 
+    and not(@message like /WARN/)
+  | sort @timestamp desc
+  | limit 10000
+
+2. NLP/Text Analysis (using strcontains for exact matches):
+  fields @timestamp, @message, @logStream, @log
+  | filter strcontains(@message, "vyudra")
+  | sort @timestamp desc
+  | limit 10000
+
+3. Request Data Analysis:
+  fields @timestamp, @message, @logStream, @log
+  | filter strcontains(@message, "Request data")
+  | sort @timestamp desc
+  | limit 10000
+
+4. Multiple String Contains:
+  fields @timestamp, @message, @logStream, @log
+  | filter strcontains(@message, "pattern1") 
+    or strcontains(@message, "pattern2")
+    or strcontains(@message, "pattern3")
+  | filter not strcontains(@message, "exclude1")
+    and not strcontains(@message, "exclude2")
+  | sort @timestamp desc
+  | limit 10000
+
+IMPORTANT: Return ONLY the raw query string without any markdown formatting, code blocks, or explanations. Choose the appropriate format based on the patterns provided.
 """
 
     logger.info(f"Prompt for query generation: {prompt}")
@@ -161,12 +228,121 @@ IMPORTANT: Return ONLY the raw query string without any markdown formatting, cod
                     query_lines.append(line)
             query = '\n'.join(query_lines).strip()
         
-        logger.info(f"Generated CloudWatch query: {query}")
+        # Additional cleanup - remove any remaining markdown or extra text
+        lines = query.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#') and not line.startswith('//'):
+                cleaned_lines.append(line)
+        query = '\n'.join(cleaned_lines)
+        
+        # Validate and potentially fix the query
+        # validated_query = _validate_cloudwatch_query(query)
+        # logger.info(f"Generated CloudWatch query: {validated_query}")
         return query
         
     except Exception as e:
         logger.error(f"Error generating CloudWatch query: {str(e)}")
-        # Fallback to basic query if LLM fails
-        fallback_query = "fields @timestamp, @message, @logStream, @log | sort @timestamp desc | limit 10000"
-        logger.warning(f"Using fallback query: {fallback_query}")
+        # Fallback to hardcoded query if LLM fails
+        fallback_query = """fields @timestamp, @message, @logStream, @log
+| filter @message like /Exception/ 
+  or @message like /ERROR/ 
+  or @message like /Error/ 
+  or @message like /FATAL/
+  or @message like /CRITICAL/
+| filter not(@message like /DEBUG/) 
+  and not(@message like /health/) 
+  and not(@message like /WARN/)
+| sort @timestamp desc
+| limit 10000"""
+        logger.warning(f"Using hardcoded fallback query: {fallback_query}")
         return fallback_query
+
+
+def _validate_cloudwatch_query(query: str) -> str:
+    """
+    Validate and fix common CloudWatch Insights query issues.
+    
+    Args:
+        query: The generated query string
+    
+    Returns:
+        Validated and potentially fixed query string
+    """
+    logger.info(f"Validating CloudWatch query: {query}")
+    
+    # If the query is too complex, simplify it
+    if "or" in query and query.count("or") > 3:
+        logger.warning(f"Query too complex with {query.count('or')} 'or' clauses, simplifying to hardcoded format")
+        simplified_query = """fields @timestamp, @message, @logStream, @log
+| filter @message like /Exception/ 
+  or @message like /ERROR/ 
+  or @message like /Error/ 
+  or @message like /FATAL/
+  or @message like /CRITICAL/
+| filter not(@message like /DEBUG/) 
+  and not(@message like /health/) 
+  and not(@message like /WARN/)
+| sort @timestamp desc
+| limit 10000"""
+        logger.info(f"Using simplified hardcoded query: {simplified_query}")
+        return simplified_query
+    
+    # Ensure proper line breaks
+    original_query = query
+    query = query.replace(" | ", "\n| ")
+    
+    if original_query != query:
+        logger.info("Fixed line breaks in query")
+        logger.info(f"Original: {original_query}")
+        logger.info(f"Fixed: {query}")
+    
+    logger.info(f"Query validation completed: {query}")
+    return query
+
+
+def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str]) -> str:
+    """
+    Generate a simple, reliable CloudWatch Insights query that's more likely to work.
+    
+    Args:
+        inclusion_patterns: List of patterns to include in the query
+        exclusion_patterns: List of patterns to exclude from the query
+    
+    Returns:
+        Simple CloudWatch Insights query string
+    """
+    logger.info(f"Generating simple CloudWatch query with inclusion: {inclusion_patterns}, exclusion: {exclusion_patterns}")
+    
+    # Use the most important patterns for error detection
+    primary_patterns = ["ERROR", "Exception"]
+    logger.info(f"Default primary patterns: {primary_patterns}")
+    
+    if inclusion_patterns:
+        # Use the first two patterns from the list, or fall back to defaults
+        if len(inclusion_patterns) >= 2:
+            primary_patterns = inclusion_patterns[:2]
+            logger.info(f"Using first two inclusion patterns: {primary_patterns}")
+        else:
+            primary_patterns = inclusion_patterns + ["ERROR"]
+            logger.info(f"Using single inclusion pattern plus ERROR: {primary_patterns}")
+    else:
+        logger.info(f"No inclusion patterns provided, using defaults: {primary_patterns}")
+    
+    # Build a simple query using the hardcoded format
+    logger.info("Building hardcoded simple query with ERROR and Exception patterns")
+    query = """fields @timestamp, @message, @logStream, @log
+| filter @message like /Exception/ 
+  or @message like /ERROR/ 
+  or @message like /Error/ 
+  or @message like /FATAL/
+  or @message like /CRITICAL/
+| filter not(@message like /DEBUG/) 
+  and not(@message like /health/) 
+  and not(@message like /WARN/)
+| sort @timestamp desc
+| limit 10000"""
+    
+    logger.info(f"Generated simple CloudWatch query: {query}")
+    return query

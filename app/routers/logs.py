@@ -32,7 +32,7 @@ def exceptions(hours: int = Query(default=1, ge=1, le=48)):
     # Create response with count, exceptions, and summary
     # return ExceptionsResponse(count=len(entries), exceptions=entries, summary=summary)
     logger.info(f"Returning response with count={len(entries)}, summary_length={len(summary)}")
-    return ExceptionsResponse(count=len(entries), exceptions=[], summary=summary)
+    return ExceptionsResponse(count=len(entries), exceptions=entries, summary=summary)
 
 
 @router.post("/nlp", response_model=NLQueryResponse)

@@ -94,13 +94,38 @@ def get_logs_exceptions(hours: int) -> List[LogEntry]:
     client = _logs_client()
     logger.info(f"Querying log group: {settings.log_group_name}")
 
-    start_query_resp = client.start_query(
-        logGroupName=settings.log_group_name,
-        startTime=int(start.timestamp()),
-        endTime=int(end.timestamp()),
-        queryString=query,
-        limit=10000,
-    )
+    try:
+        start_query_resp = client.start_query(
+            logGroupName=settings.log_group_name,
+            startTime=int(start.timestamp()),
+            endTime=int(end.timestamp()),
+            queryString=query,
+            limit=10000,
+        )
+    except Exception as e:
+        if "MalformedQueryException" in str(e):
+            logger.warning(f"Complex query failed with MalformedQueryException: {e}")
+            logger.info("Attempting fallback to simple query generation")
+            # Try with a simple query
+            from app.services.llm import _generate_simple_cloudwatch_query
+            simple_query = _generate_simple_cloudwatch_query(inclusion_patterns, exclusion_patterns)
+            logger.info(f"Generated fallback simple query: {simple_query}")
+            
+            try:
+                start_query_resp = client.start_query(
+                    logGroupName=settings.log_group_name,
+                    startTime=int(start.timestamp()),
+                    endTime=int(end.timestamp()),
+                    queryString=simple_query,
+                    limit=10000,
+                )
+                logger.info("Fallback simple query started successfully")
+            except Exception as fallback_error:
+                logger.error(f"Fallback simple query also failed: {fallback_error}")
+                raise fallback_error
+        else:
+            logger.error(f"Non-MalformedQueryException error occurred: {e}")
+            raise e
 
     query_id = start_query_resp["queryId"]
     logger.info(f"Started CloudWatch query with ID: {query_id}")
