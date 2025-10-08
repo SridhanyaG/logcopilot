@@ -67,7 +67,7 @@ def get_critical_high_vulnerabilities() -> List[VulnerabilityFinding]:
     return results
 
 
-def get_logs_exceptions(hours: int) -> List[LogEntry]:
+def get_logs_exceptions(hours: int, user_query: str = None, use_nlp_patterns: bool = False) -> List[LogEntry]:
     logger.info(f"Starting exception retrieval for {hours} hours")
     start = datetime.now(timezone.utc) - timedelta(hours=hours)
     end = datetime.now(timezone.utc)
@@ -80,15 +80,21 @@ def get_logs_exceptions(hours: int) -> List[LogEntry]:
     if settings.monitoring.get('log_groups'):
         for log_group in settings.monitoring['log_groups']:
             if log_group.get('name') == settings.log_group_name:
-                inclusion_patterns = log_group.get('inclusion_patterns', [])
-                exclusion_patterns = log_group.get('exclusion_patterns', [])
+                if use_nlp_patterns:
+                    inclusion_patterns = log_group.get('nlp_inclusion_patterns', [])
+                    exclusion_patterns = log_group.get('nlp_exclusion_patterns', [])
+                    logger.info("Using NLP-specific patterns")
+                else:
+                    inclusion_patterns = log_group.get('inclusion_patterns', [])
+                    exclusion_patterns = log_group.get('exclusion_patterns', [])
+                    logger.info("Using standard patterns")
                 break
 
     logger.info(f"Using inclusion patterns: {inclusion_patterns}")
     logger.info(f"Using exclusion patterns: {exclusion_patterns}")
 
     # Generate CloudWatch query using LLM
-    query = _generate_cloudwatch_query(inclusion_patterns, exclusion_patterns)
+    query = _generate_cloudwatch_query(inclusion_patterns, exclusion_patterns, user_query)
     logger.info(f"Generated CloudWatch query: {query}")
 
     client = _logs_client()

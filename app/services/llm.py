@@ -66,39 +66,85 @@ NVD Data:
 
 
 def summarize_exceptions(entries: List[LogEntry]) -> str:
-    logger.info(f"Starting exception summarization for {len(entries)} entries")
+    logger.info(f"Starting log analysis for {len(entries)} entries")
     if not entries:
         logger.info("No entries to summarize, returning default message")
-        return "No exceptions found in the selected timeframe."
+        return "No log entries found in the selected timeframe."
     
     client = _client()
     logger.info(f"Using OpenAI model: {settings.openai_model}")
     
     # Limit to first 1000 entries to avoid token limits
     entries_to_process = entries[:1000]
-    logger.info(f"Processing {len(entries_to_process)} entries for summarization")
+    logger.info(f"Processing {len(entries_to_process)} entries for analysis")
     
     joined = "\n\n".join(
         f"[{e.timestamp.isoformat()}] {e.message[:2000]}" for e in entries_to_process
     )
     logger.info(f"Joined log entries, total length: {len(joined)} characters")
     
-    prompt = (
-        "Summarize the exceptions below. Group by root cause, list affected components, and propose fixes.\n\n"
-        f"Logs:\n{joined}"
-    )
+    prompt = f"""Analyze the log entries below and provide a comprehensive summary in markdown format. The logs may contain exceptions, errors, INFO messages, API responses, or other types of entries.
+
+REQUIRED OUTPUT FORMAT (return as a single markdown string):
+
+## Summary
+Provide a brief overview of what was found in the logs.
+
+## Log Entry Types
+List the different types of log entries found (e.g., exceptions, INFO messages, API responses, etc.) with their counts.
+
+## Exception Analysis (if any exceptions found)
+If exceptions or errors are present, create a table grouping them:
+
+| Exception Type | Count | Root Cause | Affected Components |
+|---|---|---|---|
+| [Exception name] | [count] | [brief cause] | [components] |
+
+## API Endpoint Performance (if API calls found)
+If API endpoints are mentioned, create a table showing performance:
+
+| Endpoint | Method | Response Time | Status | Count |
+|---|---|---|---|---|
+| [endpoint] | [GET/POST/etc] | [time] | [status] | [count] |
+
+## Key Findings
+- List important observations
+- Performance issues
+- Error patterns
+- Success patterns
+
+## Recommendations
+- Immediate actions needed
+- Monitoring suggestions
+- Performance optimizations
+
+Logs to analyze:
+{joined}
+
+CRITICAL REQUIREMENTS:
+- Return the entire response as a single markdown-formatted string
+- Use proper markdown syntax for headers (##), tables (|), and lists (-)
+- Do NOT include any code blocks, backticks, or special formatting markers
+- If no exceptions are found, focus on other log types (INFO, API responses, etc.)
+- Extract actual endpoint URLs, response times, and status codes when available
+- Group similar exceptions together
+- Provide actionable recommendations
+- Ensure the output is a clean markdown string that can be directly rendered
+"""
+    
     logger.info(f"Prompt length: {len(prompt)} characters")
     
-    logger.info("Sending request to OpenAI API for exception summarization")
+    logger.info("Sending request to OpenAI API for log analysis")
     resp = client.chat.completions.create(
         model=settings.openai_model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
-        max_tokens=600,
+        max_tokens=1200,  # Increased for more detailed analysis
     )
     
     result = resp.choices[0].message.content.strip()
-    logger.info(f"Exception summarization completed, result length: {len(result)} characters")
+    logger.info(f"Log analysis completed, result length: {len(result)} characters")
+    logger.info(f"Log analysis result:\n{result}")
     return result
 
 
@@ -123,18 +169,21 @@ def _should_use_strcontains(pattern: str) -> bool:
     return should_use_strcontains
 
 
-def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str]) -> str:
+def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str], user_query: str = None) -> str:
     """
     Generate a CloudWatch Insights query using LLM based on inclusion and exclusion patterns.
     
     Args:
         inclusion_patterns: List of patterns to include in the query
         exclusion_patterns: List of patterns to exclude from the query
+        user_query: Optional user query to analyze for additional intent-based patterns
     
     Returns:
         CloudWatch Insights query string
     """
     logger.info(f"Generating CloudWatch query with inclusion: {inclusion_patterns}, exclusion: {exclusion_patterns}")
+    if user_query:
+        logger.info(f"User query provided: '{user_query}'")
     
     client = _client()
     
@@ -142,64 +191,65 @@ def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns
     inclusion_text = ", ".join(inclusion_patterns) if inclusion_patterns else "Exception, ERROR, Error, FATAL, CRITICAL"
     exclusion_text = ", ".join(exclusion_patterns) if exclusion_patterns else "DEBUG, health, WARN"
     
+    # Add user query context to the prompt
+    user_query_context = ""
+    if user_query:
+        user_query_context = f"""
+IMPORTANT: The user has asked: "{user_query}"
+
+Based on this user query, you should:
+1. Include the base patterns: {inclusion_text}
+2. Additionally include patterns relevant to the user's intent 
+3. Consider what the user is specifically looking for and add relevant patterns
+
+"""
+    
     prompt = f"""
 You are an expert in AWS CloudWatch Insights queries. Generate a CloudWatch Insights query that:
 
 1. Returns fields: @timestamp, @message, @logStream, @log
-2. Filters for log messages that contain ANY of these inclusion patterns: {inclusion_text}
+2. MUST include ALL of these inclusion patterns: {inclusion_text}
 3. EXCLUDES log messages that contain ANY of these exclusion patterns: {exclusion_text}
 4. Sorts by @timestamp in descending order
 5. Limits results to 10000
 
-CRITICAL SYNTAX RULES FOR CLOUDWATCH INSIGHTS:
-- Use the EXACT format shown below
-- For inclusion: use "or" to combine multiple patterns on separate lines
-- For exclusion: use "and" with not() functions on separate lines
-- Each pattern should be on its own line with proper indentation
-- Choose the right function based on pattern type:
-  * Use "strcontains" for simple words/phrases (e.g., "vyudra", "Request data", "user_id")
-  * Use "like" with regex for complex patterns (e.g., "Exception", "ERROR", "FATAL")
-- For simple patterns without special characters, prefer strcontains
-- For error/exception patterns, use like with regex
+{user_query_context}
 
-EXAMPLE FORMATS TO FOLLOW:
+CRITICAL REQUIREMENTS:
+- You MUST include ALL provided inclusion patterns in the query
+- Do NOT skip or omit any inclusion patterns
+- For each inclusion pattern, choose the appropriate function:
+  * Use "strcontains" for simple words/phrases without special regex characters (e.g., "INFO", "200 ok", "user_id")
+  * Use "like" with regex for patterns with special characters or error patterns (e.g., "Exception", "ERROR", "FATAL")
+- Combine all inclusion patterns with "or" on separate lines
+- Combine all exclusion patterns with "and" on separate lines
 
-1. Error/Exception Detection (using like with regex):
-  fields @timestamp, @message, @logStream, @log
-  | filter @message like /Exception/ 
-    or @message like /ERROR/ 
-    or @message like /Error/ 
-    or @message like /FATAL/
-    or @message like /CRITICAL/
-  | filter not(@message like /DEBUG/) 
-    and not(@message like /health/) 
-    and not(@message like /WARN/)
-  | sort @timestamp desc
-  | limit 10000
+REQUIRED FORMAT:
+fields @timestamp, @message, @logStream, @log
+| filter [ALL INCLUSION PATTERNS HERE - ONE PER LINE WITH "or"]
+| filter [ALL EXCLUSION PATTERNS HERE - ONE PER LINE WITH "and"]
+| sort @timestamp desc
+| limit 10000
 
-2. NLP/Text Analysis (using strcontains for exact matches):
-  fields @timestamp, @message, @logStream, @log
-  | filter strcontains(@message, "vyudra")
-  | sort @timestamp desc
-  | limit 10000
+EXAMPLE with your exact patterns:
+fields @timestamp, @message, @logStream, @log
+| filter @message like /Exception/
+  or @message like /ERROR/
+  or @message like /Error/
+  or @message like /FATAL/
+  or @message like /CRITICAL/
+  or strcontains(@message, "INFO")
+  or strcontains(@message, "200 ok")
+| filter not(@message like /DEBUG/)
+  and not(@message like /health/)
+  and not(@message like /WARN/)
+| sort @timestamp desc
+| limit 10000
 
-3. Request Data Analysis:
-  fields @timestamp, @message, @logStream, @log
-  | filter strcontains(@message, "Request data")
-  | sort @timestamp desc
-  | limit 10000
-
-4. Multiple String Contains:
-  fields @timestamp, @message, @logStream, @log
-  | filter strcontains(@message, "pattern1") 
-    or strcontains(@message, "pattern2")
-    or strcontains(@message, "pattern3")
-  | filter not strcontains(@message, "exclude1")
-    and not strcontains(@message, "exclude2")
-  | sort @timestamp desc
-  | limit 10000
-
-IMPORTANT: Return ONLY the raw query string without any markdown formatting, code blocks, or explanations. Choose the appropriate format based on the patterns provided.
+IMPORTANT: 
+- Include ALL inclusion patterns: {inclusion_text}
+- Add the user query phrase if relevant: "{user_query}"
+- Return ONLY the raw query string without any markdown formatting, code blocks, or explanations
 """
 
     logger.info(f"Prompt for query generation: {prompt}")
@@ -315,32 +365,45 @@ def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_p
     """
     logger.info(f"Generating simple CloudWatch query with inclusion: {inclusion_patterns}, exclusion: {exclusion_patterns}")
     
-    # Use the most important patterns for error detection
-    primary_patterns = ["ERROR", "Exception"]
-    logger.info(f"Default primary patterns: {primary_patterns}")
-    
+    # Use provided patterns or fall back to defaults
     if inclusion_patterns:
-        # Use the first two patterns from the list, or fall back to defaults
-        if len(inclusion_patterns) >= 2:
-            primary_patterns = inclusion_patterns[:2]
-            logger.info(f"Using first two inclusion patterns: {primary_patterns}")
-        else:
-            primary_patterns = inclusion_patterns + ["ERROR"]
-            logger.info(f"Using single inclusion pattern plus ERROR: {primary_patterns}")
+        logger.info(f"Using provided inclusion patterns: {inclusion_patterns}")
+        use_patterns = inclusion_patterns
     else:
-        logger.info(f"No inclusion patterns provided, using defaults: {primary_patterns}")
+        use_patterns = ["ERROR", "Exception"]
+        logger.info(f"No inclusion patterns provided, using defaults: {use_patterns}")
     
-    # Build a simple query using the hardcoded format
-    logger.info("Building hardcoded simple query with ERROR and Exception patterns")
-    query = """fields @timestamp, @message, @logStream, @log
-| filter @message like /Exception/ 
-  or @message like /ERROR/ 
-  or @message like /Error/ 
-  or @message like /FATAL/
-  or @message like /CRITICAL/
-| filter not(@message like /DEBUG/) 
+    # Build inclusion filter
+    inclusion_filters = []
+    for pattern in use_patterns:
+        if _should_use_strcontains(pattern):
+            inclusion_filters.append(f'strcontains(@message, "{pattern}")')
+        else:
+            inclusion_filters.append(f'@message like /{pattern}/')
+    
+    inclusion_filter_str = "\n  or ".join(inclusion_filters)
+    
+    # Build exclusion filter
+    exclusion_filters = []
+    if exclusion_patterns:
+        for pattern in exclusion_patterns:
+            if _should_use_strcontains(pattern):
+                exclusion_filters.append(f'not strcontains(@message, "{pattern}")')
+            else:
+                exclusion_filters.append(f'not(@message like /{pattern}/)')
+    
+    if exclusion_filters:
+        exclusion_filter_str = "\n  and ".join(exclusion_filters)
+    else:
+        # Default exclusions if none provided
+        exclusion_filter_str = """not(@message like /DEBUG/) 
   and not(@message like /health/) 
-  and not(@message like /WARN/)
+  and not(@message like /WARN/)"""
+    
+    # Build the complete query
+    query = f"""fields @timestamp, @message, @logStream, @log
+| filter {inclusion_filter_str}
+| filter {exclusion_filter_str}
 | sort @timestamp desc
 | limit 10000"""
     

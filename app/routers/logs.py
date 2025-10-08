@@ -38,11 +38,12 @@ def exceptions(hours: int = Query(default=1, ge=1, le=48)):
 @router.post("/nlp", response_model=NLQueryResponse)
 def nlp_summarize(req: NLQueryRequest):
     logger.info(f"POST /nlp endpoint called with query='{req.query}', hours={req.timeframe.hours}")
-    # Minimal MVP: ignore NL query and summarize exceptions for the timeframe
-    entries = get_logs_exceptions(req.timeframe.hours)
-    logger.info(f"Retrieved {len(entries)} exceptions for NLP analysis")
+    # Use enhanced query system that considers user intent in CloudWatch query generation
+    # Use NLP-specific patterns for better analysis
+    entries = get_logs_exceptions(req.timeframe.hours, user_query=req.query, use_nlp_patterns=True)
+    logger.info(f"Retrieved {len(entries)} logs for NLP analysis using user intent and NLP patterns")
     
-    logger.info("Generating NLP response for exceptions")
+    logger.info("Generating NLP response for logs")
     answer = summarize_exceptions(entries)
     logger.info(f"NLP response generated successfully, length: {len(answer)} characters")
     
