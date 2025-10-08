@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = Field(default="gpt-4o-mini")
     
+    # LLM Configuration
+    llm_provider: str = Field(default="openai")  # Options: "openai" or "core_ai"
+    core_ai_token: str | None = None
+    core_ai_client_id: str | None = None
+    core_ai_url: str = Field(default="https://int.lionis.ai/api/v1/llm/chat/completions")
+    
     # NVD API Configuration
     nvd_api_key: str | None = None
     nvd_base_url: str = Field(default="https://services.nvd.nist.gov/rest/json")
@@ -68,7 +74,24 @@ class Settings(BaseSettings):
             
             if 'llm' in config:
                 llm_config = config['llm']
+                print(f"Loading LLM configuration from YAML")
                 settings.openai_model = llm_config.get('model', settings.openai_model)
+                print(f"OpenAI model set to: {settings.openai_model}")
+                settings.llm_provider = llm_config.get('provider', settings.llm_provider)
+                print(f"LLM provider set to: {settings.llm_provider}")
+                
+                # Load Core AI configuration if present
+                if 'core_ai' in llm_config:
+                    print("Loading Core AI configuration from YAML")
+                    core_ai_config = llm_config['core_ai']
+                    settings.core_ai_token = core_ai_config.get('token', settings.core_ai_token)
+                    settings.core_ai_client_id = core_ai_config.get('client_id', settings.core_ai_client_id)
+                    settings.core_ai_url = core_ai_config.get('url', settings.core_ai_url)
+                    print(f"Core AI URL set to: {settings.core_ai_url}")
+                    print(f"Core AI token present: {bool(settings.core_ai_token)}")
+                    print(f"Core AI client ID present: {bool(settings.core_ai_client_id)}")
+                else:
+                    print("No Core AI configuration found in YAML")
             
             if 'scheduler' in config:
                 settings.scheduler = config['scheduler']

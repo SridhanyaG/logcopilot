@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import List
 from openai import OpenAI
+import requests
+import json
 
 from ..config import settings
 from ..models import VulnerabilityInput, LogEntry
@@ -15,12 +17,195 @@ def _client() -> OpenAI:
     return OpenAI(api_key=settings.openai_api_key)
 
 
+def _call_openai_llm(prompt: str, temperature: float = 0.2, max_tokens: int = 600, operation_name: str = "OpenAI LLM call") -> str:
+    """
+    Make OpenAI API calls with consistent error handling and logging.
+    
+    Args:
+        prompt: The prompt to send to the LLM
+        temperature: Temperature for response generation (default: 0.2)
+        max_tokens: Maximum tokens in response (default: 600)
+        operation_name: Name of the operation for logging (default: "OpenAI LLM call")
+    
+    Returns:
+        The LLM response content as a string
+    
+    Raises:
+        RuntimeError: If LLM call fails
+    """
+    logger.info(f"Starting {operation_name}")
+    logger.info(f"OpenAI model: {settings.openai_model}")
+    logger.info(f"Temperature: {temperature}, Max tokens: {max_tokens}")
+    logger.info(f"Prompt length: {len(prompt)} characters")
+    
+    logger.info("Creating OpenAI client")
+    client = _client()
+    logger.info("OpenAI client created successfully")
+    
+    try:
+        logger.info("Sending request to OpenAI API")
+        resp = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        logger.info("Received response from OpenAI API")
+        
+        logger.info("Extracting content from OpenAI response")
+        result = resp.choices[0].message.content.strip()
+        logger.info(f"{operation_name} completed successfully, result length: {len(result)} characters")
+        logger.info(f"OpenAI response preview: {result[:200]}...")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in {operation_name}: {str(e)}")
+        logger.error(f"OpenAI API call failed with exception type: {type(e).__name__}")
+        raise RuntimeError(f"OpenAI LLM call failed for {operation_name}: {str(e)}")
+
+
+def _call_llm_core_ai(prompt: str, temperature: float = 0.2, max_tokens: int = 600, operation_name: str = "Core AI LLM call") -> str:
+    """
+    Make Core AI API calls with consistent error handling and logging.
+    
+    Args:
+        prompt: The prompt to send to the LLM
+        temperature: Temperature for response generation (default: 0.2)
+        max_tokens: Maximum tokens in response (default: 600)
+        operation_name: Name of the operation for logging (default: "Core AI LLM call")
+    
+    Returns:
+        The LLM response content as a string
+    
+    Raises:
+        RuntimeError: If LLM call fails
+    """
+    logger.info(f"Starting {operation_name}")
+    logger.info(f"Core AI model: {settings.openai_model}")
+    logger.info(f"Temperature: {temperature}, Max tokens: {max_tokens}")
+    logger.info(f"Prompt length: {len(prompt)} characters")
+    logger.info(f"Core AI URL: {settings.core_ai_url}")
+    
+    logger.info("Validating Core AI configuration")
+    if not settings.core_ai_token or not settings.core_ai_client_id:
+        logger.error("Core AI token and client_id not configured")
+        logger.error(f"Token present: {bool(settings.core_ai_token)}")
+        logger.error(f"Client ID present: {bool(settings.core_ai_client_id)}")
+        raise RuntimeError("Core AI token and client_id not configured")
+    logger.info("Core AI configuration validation passed")
+    
+    logger.info("Preparing Core AI request headers")
+    headers = {
+        "Authorization": f"Bearer {settings.core_ai_token}",
+        "x-client-id": settings.core_ai_client_id,
+        "Content-Type": "application/json",
+    }
+    logger.info("Core AI request headers prepared")
+    logger.info(f"Authorization header present: {bool(headers.get('Authorization'))}")
+    logger.info(f"Client ID header present: {bool(headers.get('x-client-id'))}")
+    
+    logger.info("Preparing Core AI request data")
+    data = {
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "model": settings.openai_model,  # Use the same model setting
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
+    logger.info("Core AI request data prepared")
+    logger.info(f"Request data keys: {list(data.keys())}")
+    logger.info(f"Number of messages: {len(data['messages'])}")
+    
+    try:
+        logger.info(f"Calling Core AI API at {settings.core_ai_url}")
+        logger.info("Sending POST request to Core AI")
+        response = requests.post(settings.core_ai_url, headers=headers, data=json.dumps(data))
+        logger.info(f"Received response from Core AI API with status code: {response.status_code}")
+        
+        if response.status_code != 200:
+            logger.error(f"Core AI API returned status {response.status_code}")
+            logger.error(f"Response headers: {dict(response.headers)}")
+            logger.error(f"Response text: {response.text}")
+            raise RuntimeError(f"Core AI API call failed with status {response.status_code}")
+        
+        logger.info("Core AI API call successful, parsing JSON response")
+        result_data = response.json()
+        logger.info("JSON response parsed successfully")
+        logger.info(f"Response data keys: {list(result_data.keys())}")
+        
+        # Extract the content from Core AI response format
+        logger.info("Extracting content from Core AI response")
+        if 'choices' in result_data and len(result_data['choices']) > 0:
+            logger.info(f"Found {len(result_data['choices'])} choices in response")
+            result = result_data['choices'][0]['message']['content'].strip()
+            logger.info("Content extracted successfully from Core AI response")
+        else:
+            logger.error(f"Unexpected Core AI response format: {result_data}")
+            logger.error("No choices found in Core AI response")
+            raise RuntimeError("Unexpected Core AI response format")
+        
+        logger.info(f"{operation_name} completed successfully, result length: {len(result)} characters")
+        logger.info(f"Core AI response preview: {result[:200]}...")
+        return result
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error in {operation_name}: {str(e)}")
+        logger.error(f"Request exception type: {type(e).__name__}")
+        raise RuntimeError(f"Core AI network error for {operation_name}: {str(e)}")
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in {operation_name}: {str(e)}")
+        logger.error(f"Response text that failed to decode: {response.text if 'response' in locals() else 'No response available'}")
+        raise RuntimeError(f"Core AI JSON decode error for {operation_name}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in {operation_name}: {str(e)}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        raise RuntimeError(f"Core AI call failed for {operation_name}: {str(e)}")
+
+
+def _call_llm(prompt: str, temperature: float = 0.2, max_tokens: int = 600, operation_name: str = "LLM call") -> str:
+    """
+    Common function to make LLM API calls with feature switch between OpenAI and Core AI.
+    
+    Args:
+        prompt: The prompt to send to the LLM
+        temperature: Temperature for response generation (default: 0.2)
+        max_tokens: Maximum tokens in response (default: 600)
+        operation_name: Name of the operation for logging (default: "LLM call")
+    
+    Returns:
+        The LLM response content as a string
+    
+    Raises:
+        RuntimeError: If LLM call fails
+    """
+    logger.info(f"Starting LLM call routing for operation: {operation_name}")
+    logger.info(f"LLM provider configured: {settings.llm_provider}")
+    logger.info(f"Available providers: ['openai', 'core_ai']")
+    logger.info(f"Temperature: {temperature}, Max tokens: {max_tokens}")
+    logger.info(f"Prompt length: {len(prompt)} characters")
+    
+    if settings.llm_provider == "core_ai":
+        logger.info("Routing to Core AI provider")
+        logger.info("Calling _call_llm_core_ai function")
+        result = _call_llm_core_ai(prompt, temperature, max_tokens, operation_name)
+        logger.info("Core AI call completed successfully")
+        return result
+    else:
+        logger.info("Routing to OpenAI provider (default)")
+        logger.info("Calling _call_openai_llm function")
+        result = _call_openai_llm(prompt, temperature, max_tokens, operation_name)
+        logger.info("OpenAI call completed successfully")
+        return result
+
+
 def suggest_remediation(vuln: VulnerabilityInput, repo: str | None, branch: str | None,
                         release: str | None, requirements_text: str | None, 
                         nvd_data: dict | None = None) -> str:
     logger.info(f"Generating remediation suggestion for vulnerability: {vuln.name}")
-    client = _client()
-    logger.info(f"Using OpenAI model: {settings.openai_model}")
     
     # Build enhanced prompt with NVD data
     nvd_context = ""
@@ -50,19 +235,8 @@ NVD Data:
         f"{nvd_context}\n"
         "Return concise steps and suggested versions. If NVD data is available, use it to provide more accurate remediation advice."
     )
-    logger.info(f"Prompt length: {len(prompt)} characters")
     
-    logger.info("Sending request to OpenAI API")
-    resp = client.chat.completions.create(
-        model=settings.openai_model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=600,
-    )
-    
-    result = resp.choices[0].message.content.strip()
-    logger.info(f"Received remediation suggestion, length: {len(result)} characters")
-    return result
+    return _call_llm(prompt, temperature=0.2, max_tokens=600, operation_name="remediation suggestion generation")
 
 
 def summarize_exceptions(entries: List[LogEntry]) -> str:
@@ -70,9 +244,6 @@ def summarize_exceptions(entries: List[LogEntry]) -> str:
     if not entries:
         logger.info("No entries to summarize, returning default message")
         return "No log entries found in the selected timeframe."
-    
-    client = _client()
-    logger.info(f"Using OpenAI model: {settings.openai_model}")
     
     # Limit to first 1000 entries to avoid token limits
     entries_to_process = entries[:1000]
@@ -132,18 +303,7 @@ CRITICAL REQUIREMENTS:
 - Ensure the output is a clean markdown string that can be directly rendered
 """
     
-    logger.info(f"Prompt length: {len(prompt)} characters")
-    
-    logger.info("Sending request to OpenAI API for log analysis")
-    resp = client.chat.completions.create(
-        model=settings.openai_model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=1200,  # Increased for more detailed analysis
-    )
-    
-    result = resp.choices[0].message.content.strip()
-    logger.info(f"Log analysis completed, result length: {len(result)} characters")
+    result = _call_llm(prompt, temperature=0.2, max_tokens=1200, operation_name="log analysis")
     logger.info(f"Log analysis result:\n{result}")
     return result
 
@@ -184,8 +344,6 @@ def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns
     logger.info(f"Generating CloudWatch query with inclusion: {inclusion_patterns}, exclusion: {exclusion_patterns}")
     if user_query:
         logger.info(f"User query provided: '{user_query}'")
-    
-    client = _client()
     
     # Build the prompt for query generation
     inclusion_text = ", ".join(inclusion_patterns) if inclusion_patterns else "Exception, ERROR, Error, FATAL, CRITICAL"
@@ -252,17 +410,8 @@ IMPORTANT:
 - Return ONLY the raw query string without any markdown formatting, code blocks, or explanations
 """
 
-    logger.info(f"Prompt for query generation: {prompt}")
-    
     try:
-        resp = client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,  # Low temperature for consistent query generation
-            max_tokens=200,
-        )
-        
-        query = resp.choices[0].message.content.strip()
+        query = _call_llm(prompt, temperature=0.1, max_tokens=200, operation_name="CloudWatch query generation")
         
         # Clean up the query - remove markdown code blocks if present
         if query.startswith("```"):
@@ -287,9 +436,6 @@ IMPORTANT:
                 cleaned_lines.append(line)
         query = '\n'.join(cleaned_lines)
         
-        # Validate and potentially fix the query
-        # validated_query = _validate_cloudwatch_query(query)
-        # logger.info(f"Generated CloudWatch query: {validated_query}")
         return query
         
     except Exception as e:
