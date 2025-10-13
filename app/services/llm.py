@@ -3,12 +3,84 @@ from typing import List
 from openai import OpenAI
 import requests
 import json
+import asyncio
+import tiktoken
 
 from ..config import settings
 from ..models import VulnerabilityInput, LogEntry
 from ..utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
+    """
+    Count tokens in text using tiktoken.
+    
+    Args:
+        text: The text to count tokens for
+        model: The model to use for token counting (default: gpt-3.5-turbo)
+    
+    Returns:
+        Number of tokens in the text
+    """
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+        return len(encoding.encode(text))
+    except KeyError:
+        # Fallback to cl100k_base encoding if model not found
+        encoding = tiktoken.get_encoding("cl100k_base")
+        return len(encoding.encode(text))
+
+
+def _chunk_logs_by_tokens(entries: List[LogEntry], max_tokens: int = 3000) -> List[List[LogEntry]]:
+    """
+    Chunk log entries based on token count to stay within LLM limits.
+    
+    Args:
+        entries: List of log entries to chunk
+        max_tokens: Maximum tokens per chunk (default: 3000, leaving room for prompt)
+    
+    Returns:
+        List of chunks, each containing log entries that fit within token limit
+    """
+    logger.info(f"Chunking {len(entries)} log entries with max_tokens={max_tokens}")
+    
+    if not entries:
+        return []
+    
+    chunks = []
+    current_chunk = []
+    current_tokens = 0
+    
+    # Base prompt tokens (approximate)
+    base_prompt_tokens = 500
+    
+    for entry in entries:
+        # Format entry for token counting
+        entry_text = f"[{entry.timestamp.isoformat()}] {entry.message[:2000]}"
+        entry_tokens = _count_tokens(entry_text)
+        
+        # Check if adding this entry would exceed the limit
+        if current_tokens + entry_tokens + base_prompt_tokens > max_tokens and current_chunk:
+            # Start a new chunk
+            chunks.append(current_chunk)
+            current_chunk = [entry]
+            current_tokens = entry_tokens
+        else:
+            # Add to current chunk
+            current_chunk.append(entry)
+            current_tokens += entry_tokens
+    
+    # Add the last chunk if it has entries
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    logger.info(f"Created {len(chunks)} chunks from {len(entries)} entries")
+    for i, chunk in enumerate(chunks):
+        logger.info(f"Chunk {i+1}: {len(chunk)} entries")
+    
+    return chunks
 
 
 def _client() -> OpenAI:
@@ -166,7 +238,44 @@ def _call_llm_core_ai(prompt: str, temperature: float = 0.2, max_tokens: int = 6
         raise RuntimeError(f"Core AI call failed for {operation_name}: {str(e)}")
 
 
-def _call_llm(prompt: str, temperature: float = 0.2, max_tokens: int = 600, operation_name: str = "LLM call") -> str:
+async def _call_llm_async(prompt: str, temperature: float = 0.2, max_tokens: int = 4096, operation_name: str = "Async LLM call") -> str:
+    """
+    Async version of LLM call for parallel processing.
+    
+    Args:
+        prompt: The prompt to send to the LLM
+        temperature: Temperature for response generation (default: 0.2)
+        max_tokens: Maximum tokens in response (default: 4096)
+        operation_name: Name of the operation for logging (default: "Async LLM call")
+    
+    Returns:
+        The LLM response content as a string
+    
+    Raises:
+        RuntimeError: If LLM call fails
+    """
+    logger.info(f"Starting async {operation_name}")
+    logger.info(f"LLM provider configured: {settings.llm_provider}")
+    logger.info(f"Temperature: {temperature}, Max tokens: {max_tokens}")
+    logger.info(f"Prompt length: {len(prompt)} characters")
+    
+    if settings.llm_provider == "core_ai":
+        logger.info("Routing to Core AI provider (async)")
+        # For Core AI, we'll run the sync function in a thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _call_llm_core_ai, prompt, temperature, max_tokens, operation_name)
+        logger.info("Async Core AI call completed successfully")
+        return result
+    else:
+        logger.info("Routing to OpenAI provider (async)")
+        # For OpenAI, we'll run the sync function in a thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _call_openai_llm, prompt, temperature, max_tokens, operation_name)
+        logger.info("Async OpenAI call completed successfully")
+        return result
+
+
+def _call_llm(prompt: str, temperature: float = 0.2, max_tokens: int = 4096, operation_name: str = "LLM call") -> str:
     """
     Common function to make LLM API calls with feature switch between OpenAI and Core AI.
     
@@ -239,20 +348,26 @@ NVD Data:
     return _call_llm(prompt, temperature=0.2, max_tokens=600, operation_name="remediation suggestion generation")
 
 
-def summarize_exceptions(entries: List[LogEntry]) -> str:
-    logger.info(f"Starting log analysis for {len(entries)} entries")
-    if not entries:
-        logger.info("No entries to summarize, returning default message")
-        return "No log entries found in the selected timeframe."
+async def _summarize_chunk_async(chunk: List[LogEntry], chunk_index: int) -> str:
+    """
+    Summarize a single chunk of log entries asynchronously.
     
-    # Limit to first 1000 entries to avoid token limits
-    entries_to_process = entries[:1000]
-    logger.info(f"Processing {len(entries_to_process)} entries for analysis")
+    Args:
+        chunk: List of log entries to summarize
+        chunk_index: Index of the chunk for logging purposes
+    
+    Returns:
+        Summary of the chunk
+    """
+    logger.info(f"Starting async summarization for chunk {chunk_index} with {len(chunk)} entries")
+    
+    if not chunk:
+        return "No entries in this chunk."
     
     joined = "\n\n".join(
-        f"[{e.timestamp.isoformat()}] {e.message[:2000]}" for e in entries_to_process
+        f"[{e.timestamp.isoformat()}] {e.message[:2000]}" for e in chunk
     )
-    logger.info(f"Joined log entries, total length: {len(joined)} characters")
+    logger.info(f"Chunk {chunk_index} joined log entries, total length: {len(joined)} characters")
     
     prompt = f"""Analyze the log entries below and provide a comprehensive summary in markdown format. The logs may contain exceptions, errors, INFO messages, API responses, or other types of entries.
 
@@ -303,9 +418,243 @@ CRITICAL REQUIREMENTS:
 - Ensure the output is a clean markdown string that can be directly rendered
 """
     
-    result = _call_llm(prompt, temperature=0.2, max_tokens=1200, operation_name="log analysis")
-    logger.info(f"Log analysis result:\n{result}")
-    return result
+    try:
+        result = await _call_llm_async(prompt, temperature=0.2, max_tokens=1200, operation_name=f"chunk {chunk_index} analysis")
+        logger.info(f"Chunk {chunk_index} analysis completed successfully, result length: {len(result)} characters")
+        return result
+    except Exception as e:
+        logger.error(f"Error analyzing chunk {chunk_index}: {str(e)}")
+        return f"Error analyzing chunk {chunk_index}: {str(e)}"
+
+
+async def summarize_exceptions_async(entries: List[LogEntry], max_tokens: int = 3000) -> str:
+    """
+    Summarize exceptions using async processing with token-based chunking.
+    
+    Args:
+        entries: List of log entries to summarize
+        max_tokens: Maximum tokens per chunk (default: 3000)
+    
+    Returns:
+        Combined summary of all chunks
+    """
+    logger.info(f"Starting async log analysis for {len(entries)} entries with max_tokens={max_tokens}")
+    
+    if not entries:
+        logger.info("No entries to summarize, returning default message")
+        return "No log entries found in the selected timeframe."
+    
+    # Chunk the entries based on token count
+    chunks = _chunk_logs_by_tokens(entries, max_tokens)
+    
+    if len(chunks) == 1:
+        logger.info("Single chunk detected, processing directly")
+        return await _summarize_chunk_async(chunks[0], 0)
+    
+    logger.info(f"Processing {len(chunks)} chunks in parallel")
+    
+    # Process all chunks in parallel
+    chunk_tasks = [
+        _summarize_chunk_async(chunk, i) 
+        for i, chunk in enumerate(chunks)
+    ]
+    
+    try:
+        chunk_summaries = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+        logger.info(f"All {len(chunk_summaries)} chunks processed")
+        
+        # Filter out any exceptions and log them
+        valid_summaries = []
+        for i, summary in enumerate(chunk_summaries):
+            if isinstance(summary, Exception):
+                logger.error(f"Chunk {i} failed with exception: {str(summary)}")
+                valid_summaries.append(f"Chunk {i} processing failed: {str(summary)}")
+            else:
+                valid_summaries.append(summary)
+        
+        if not valid_summaries:
+            logger.error("All chunks failed to process")
+            return "Error: All log chunks failed to process."
+        
+        # Combine chunk summaries
+        logger.info(f"Combining {len(valid_summaries)} chunk summaries")
+        combined_summary = await _combine_chunk_summaries(valid_summaries)
+        
+        logger.info(f"Async log analysis completed successfully, final summary length: {len(combined_summary)} characters")
+        return combined_summary
+        
+    except Exception as e:
+        logger.error(f"Error in async chunk processing: {str(e)}")
+        return f"Error processing log chunks: {str(e)}"
+
+
+async def _combine_chunk_summaries(chunk_summaries: List[str]) -> str:
+    """
+    Combine multiple chunk summaries into a final comprehensive summary.
+    
+    Args:
+        chunk_summaries: List of summaries from individual chunks
+    
+    Returns:
+        Combined summary
+    """
+    logger.info(f"Combining {len(chunk_summaries)} chunk summaries")
+    
+    if len(chunk_summaries) == 1:
+        return chunk_summaries[0]
+    
+    # Join all chunk summaries
+    combined_text = "\n\n--- CHUNK SEPARATOR ---\n\n".join(chunk_summaries)
+    logger.info(f"Combined text length: {len(combined_text)} characters")
+    
+    prompt = f"""You are analyzing multiple summaries of log entries that were processed in chunks. Combine these summaries into a single, comprehensive analysis.
+
+REQUIRED OUTPUT FORMAT (return as a single markdown string):
+
+## Overall Summary
+Provide a high-level overview combining insights from all chunks.
+
+## Log Entry Types (Combined)
+Aggregate the different types of log entries found across all chunks with their total counts.
+
+## Exception Analysis (Combined)
+If exceptions or errors are present across chunks, create a unified table:
+
+| Exception Type | Total Count | Root Cause | Affected Components |
+|---|---|---|---|
+| [Exception name] | [total count] | [brief cause] | [components] |
+
+## API Endpoint Performance (Combined)
+If API endpoints are mentioned across chunks, create a unified performance table:
+
+| Endpoint | Method | Avg Response Time | Status Distribution | Total Count |
+|---|---|---|---|---|
+| [endpoint] | [GET/POST/etc] | [avg time] | [status breakdown] | [total count] |
+
+## Key Findings (Combined)
+- Aggregate important observations from all chunks
+- Cross-chunk patterns and trends
+- Performance issues identified
+- Error patterns and frequency
+- Success patterns
+
+## Recommendations (Prioritized)
+- Immediate actions needed (based on severity across chunks)
+- Monitoring suggestions
+- Performance optimizations
+- System-wide improvements
+
+Chunk summaries to combine:
+{combined_text}
+
+CRITICAL REQUIREMENTS:
+- Return the entire response as a single markdown-formatted string
+- Use proper markdown syntax for headers (##), tables (|), and lists (-)
+- Do NOT include any code blocks, backticks, or special formatting markers
+- Aggregate counts and metrics across all chunks
+- Identify patterns that span multiple chunks
+- Prioritize recommendations based on frequency and severity
+- Ensure the output is a clean markdown string that can be directly rendered
+"""
+    
+    try:
+        result = await _call_llm_async(prompt, temperature=0.2, max_tokens=2000, operation_name="chunk summary combination")
+        logger.info(f"Chunk combination completed successfully, result length: {len(result)} characters")
+        return result
+    except Exception as e:
+        logger.error(f"Error combining chunk summaries: {str(e)}")
+        # Fallback: return a simple combination
+        return f"## Combined Analysis\n\n" + "\n\n".join(f"### Chunk {i+1}\n{summary}" for i, summary in enumerate(chunk_summaries))
+
+
+def summarize_exceptions(entries: List[LogEntry]) -> str:
+    """
+    Synchronous wrapper for the async summarization function.
+    This maintains backward compatibility while providing the new async functionality.
+    """
+    logger.info(f"Starting synchronous log analysis for {len(entries)} entries")
+    
+    if not entries:
+        logger.info("No entries to summarize, returning default message")
+        return "No log entries found in the selected timeframe."
+    
+    # Check if we need chunking by estimating token count
+    total_text = "\n\n".join(f"[{e.timestamp.isoformat()}] {e.message[:2000]}" for e in entries[:100])  # Sample first 100
+    estimated_tokens = _count_tokens(total_text) * (len(entries) / min(100, len(entries)))
+    
+    if estimated_tokens > 3000:
+        logger.info(f"Large log set detected (estimated {estimated_tokens} tokens), using async chunking")
+        # Use async processing for large logs
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(summarize_exceptions_async(entries))
+            return result
+        finally:
+            loop.close()
+    else:
+        logger.info(f"Small log set detected (estimated {estimated_tokens} tokens), using direct processing")
+        # Use original processing for small logs
+        entries_to_process = entries[:1000]
+        logger.info(f"Processing {len(entries_to_process)} entries for analysis")
+        
+        joined = "\n\n".join(
+            f"[{e.timestamp.isoformat()}] {e.message[:2000]}" for e in entries_to_process
+        )
+        logger.info(f"Joined log entries, total length: {len(joined)} characters")
+        
+        prompt = f"""Analyze the log entries below and provide a comprehensive summary in markdown format. The logs may contain exceptions, errors, INFO messages, API responses, or other types of entries.
+
+REQUIRED OUTPUT FORMAT (return as a single markdown string):
+
+## Summary
+Provide a brief overview of what was found in the logs.
+
+## Log Entry Types
+List the different types of log entries found (e.g., exceptions, INFO messages, API responses, etc.) with their counts.
+
+## Exception Analysis (if any exceptions found)
+If exceptions or errors are present, create a table grouping them:
+
+| Exception Type | Count | Root Cause | Affected Components |
+|---|---|---|---|
+| [Exception name] | [count] | [brief cause] | [components] |
+
+## API Endpoint Performance (if API calls found)
+If API endpoints are mentioned, create a table showing performance:
+
+| Endpoint | Method | Response Time | Status | Count |
+|---|---|---|---|---|
+| [endpoint] | [GET/POST/etc] | [time] | [status] | [count] |
+
+## Key Findings
+- List important observations
+- Performance issues
+- Error patterns
+- Success patterns
+
+## Recommendations
+- Immediate actions needed
+- Monitoring suggestions
+- Performance optimizations
+
+Logs to analyze:
+{joined}
+
+CRITICAL REQUIREMENTS:
+- Return the entire response as a single markdown-formatted string
+- Use proper markdown syntax for headers (##), tables (|), and lists (-)
+- Do NOT include any code blocks, backticks, or special formatting markers
+- If no exceptions are found, focus on other log types (INFO, API responses, etc.)
+- Extract actual endpoint URLs, response times, and status codes when available
+- Group similar exceptions together
+- Provide actionable recommendations
+- Ensure the output is a clean markdown string that can be directly rendered
+"""
+        
+        result = _call_llm(prompt, temperature=0.2, max_tokens=1200, operation_name="log analysis")
+        logger.info(f"Log analysis result:\n{result}")
+        return result
 
 
 def _should_use_strcontains(pattern: str) -> bool:
