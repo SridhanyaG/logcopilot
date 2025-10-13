@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import List
+from datetime import datetime
 from openai import OpenAI
 import requests
 import json
@@ -678,7 +679,7 @@ def _should_use_strcontains(pattern: str) -> bool:
     return should_use_strcontains
 
 
-def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str], user_query: str = None) -> str:
+def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str], user_query: str = None, start_time: datetime = None, end_time: datetime = None) -> str:
     """
     Generate a CloudWatch Insights query using LLM based on inclusion and exclusion patterns.
     
@@ -711,6 +712,13 @@ Based on this user query, you should:
 
 """
     
+    # Add time range filter if provided
+    time_filter = ""
+    if start_time and end_time:
+        start_epoch = int(start_time.timestamp())
+        end_epoch = int(end_time.timestamp())
+        time_filter = f"| filter @timestamp >= {start_epoch} and @timestamp <= {end_epoch}"
+    
     prompt = f"""
 You are an expert in AWS CloudWatch Insights queries. Generate a CloudWatch Insights query that:
 
@@ -719,6 +727,7 @@ You are an expert in AWS CloudWatch Insights queries. Generate a CloudWatch Insi
 3. EXCLUDES log messages that contain ANY of these exclusion patterns: {exclusion_text}
 4. Sorts by @timestamp in descending order
 5. Limits results to 10000
+{f"6. Filters by time range: {start_time} to {end_time}" if start_time and end_time else ""}
 
 {user_query_context}
 
@@ -730,16 +739,19 @@ CRITICAL REQUIREMENTS:
   * Use "like" with regex for patterns with special characters or error patterns (e.g., "Exception", "ERROR", "FATAL")
 - Combine all inclusion patterns with "or" on separate lines
 - Combine all exclusion patterns with "and" on separate lines
+{f"- MUST include time range filter: @timestamp >= {int(start_time.timestamp())} and @timestamp <= {int(end_time.timestamp())}" if start_time and end_time else ""}
 
 REQUIRED FORMAT:
 fields @timestamp, @message, @logStream, @log
+{time_filter}
 | filter [ALL INCLUSION PATTERNS HERE - ONE PER LINE WITH "or"]
 | filter [ALL EXCLUSION PATTERNS HERE - ONE PER LINE WITH "and"]
 | sort @timestamp desc
 | limit 10000
 
-EXAMPLE with your exact patterns:
+EXAMPLE with your exact patterns{f" and time range {start_time} to {end_time}" if start_time and end_time else ""}:
 fields @timestamp, @message, @logStream, @log
+{time_filter}
 | filter @message like /Exception/
   or @message like /ERROR/
   or @message like /Error/
@@ -790,7 +802,8 @@ IMPORTANT:
     except Exception as e:
         logger.error(f"Error generating CloudWatch query: {str(e)}")
         # Fallback to hardcoded query if LLM fails
-        fallback_query = """fields @timestamp, @message, @logStream, @log
+        fallback_query = f"""fields @timestamp, @message, @logStream, @log
+{time_filter}
 | filter @message like /Exception/ 
   or @message like /ERROR/ 
   or @message like /Error/ 
@@ -847,7 +860,7 @@ def _validate_cloudwatch_query(query: str) -> str:
     return query
 
 
-def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str]) -> str:
+def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str], start_time: datetime = None, end_time: datetime = None) -> str:
     """
     Generate a simple, reliable CloudWatch Insights query that's more likely to work.
     
@@ -895,9 +908,16 @@ def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_p
   and not(@message like /health/) 
   and not(@message like /WARN/)"""
     
+    # Add time range filter if provided
+    time_filter = ""
+    if start_time and end_time:
+        start_epoch = int(start_time.timestamp())
+        end_epoch = int(end_time.timestamp())
+        time_filter = f"| filter @timestamp >= {start_epoch} and @timestamp <= {end_epoch}\n"
+    
     # Build the complete query
     query = f"""fields @timestamp, @message, @logStream, @log
-| filter {inclusion_filter_str}
+{time_filter}| filter {inclusion_filter_str}
 | filter {exclusion_filter_str}
 | sort @timestamp desc
 | limit 10000"""

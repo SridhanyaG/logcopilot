@@ -103,8 +103,8 @@ def get_logs_exceptions(hours: int = None, minutes: int = None, user_query: str 
     logger.info(f"Using inclusion patterns: {inclusion_patterns}")
     logger.info(f"Using exclusion patterns: {exclusion_patterns}")
 
-    # Generate CloudWatch query using LLM
-    query = _generate_cloudwatch_query(inclusion_patterns, exclusion_patterns, user_query)
+    # Generate CloudWatch query using LLM with time range
+    query = _generate_cloudwatch_query(inclusion_patterns, exclusion_patterns, user_query, start, end)
     logger.info(f"Generated CloudWatch query: {query}")
 
     client = _logs_client()
@@ -124,7 +124,7 @@ def get_logs_exceptions(hours: int = None, minutes: int = None, user_query: str 
             logger.info("Attempting fallback to simple query generation")
             # Try with a simple query
             from app.services.llm import _generate_simple_cloudwatch_query
-            simple_query = _generate_simple_cloudwatch_query(inclusion_patterns, exclusion_patterns)
+            simple_query = _generate_simple_cloudwatch_query(inclusion_patterns, exclusion_patterns, start, end)
             logger.info(f"Generated fallback simple query: {simple_query}")
             
             try:
