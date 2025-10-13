@@ -67,9 +67,19 @@ def get_critical_high_vulnerabilities() -> List[VulnerabilityFinding]:
     return results
 
 
-def get_logs_exceptions(hours: int, user_query: str = None, use_nlp_patterns: bool = False) -> List[LogEntry]:
-    logger.info(f"Starting exception retrieval for {hours} hours")
-    start = datetime.now(timezone.utc) - timedelta(hours=hours)
+def get_logs_exceptions(hours: int = None, minutes: int = None, user_query: str = None, use_nlp_patterns: bool = False) -> List[LogEntry]:
+    # Handle both hours and minutes parameters
+    if minutes is not None:
+        total_minutes = minutes
+        logger.info(f"Starting exception retrieval for {minutes} minutes")
+    elif hours is not None:
+        total_minutes = hours * 60
+        logger.info(f"Starting exception retrieval for {hours} hours")
+    else:
+        total_minutes = 60  # Default to 1 hour
+        logger.info("Starting exception retrieval for default 1 hour")
+    
+    start = datetime.now(timezone.utc) - timedelta(minutes=total_minutes)
     end = datetime.now(timezone.utc)
     logger.info(f"Query time range: {start} to {end}")
 

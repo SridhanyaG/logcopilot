@@ -3,7 +3,26 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 
 class Timeframe(BaseModel):
-    hours: int = Field(ge=1, le=48, default=1)
+    hours: Optional[int] = Field(default=None, ge=1, le=48)
+    minutes: Optional[int] = Field(default=None, ge=1, le=2880)  # Max 48 hours in minutes
+    
+    def get_total_minutes(self) -> int:
+        """Convert timeframe to total minutes"""
+        if self.minutes is not None:
+            return self.minutes
+        elif self.hours is not None:
+            return self.hours * 60
+        else:
+            return 60  # Default to 1 hour
+    
+    def get_total_hours(self) -> float:
+        """Convert timeframe to total hours (as float for precision)"""
+        if self.minutes is not None:
+            return self.minutes / 60.0
+        elif self.hours is not None:
+            return self.hours
+        else:
+            return 1.0  # Default to 1 hour
 
 class VulnerabilityFinding(BaseModel):
     name: str

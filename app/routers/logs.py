@@ -12,9 +12,9 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 
 
 @router.get("/exceptions", response_model=ExceptionsResponse)
-def exceptions(hours: int = Query(default=1, ge=1, le=48)):
-    logger.info(f"GET /exceptions endpoint called with hours={hours}")
-    entries = get_logs_exceptions(hours)
+def exceptions(hours: int = Query(default=None, ge=1, le=48), minutes: int = Query(default=None, ge=1, le=2880)):
+    logger.info(f"GET /exceptions endpoint called with hours={hours}, minutes={minutes}")
+    entries = get_logs_exceptions(hours=hours, minutes=minutes)
     logger.info(f"Retrieved {len(entries)} exceptions from CloudWatch")
     
     # Generate AI summary if there are exceptions
@@ -38,10 +38,15 @@ def exceptions(hours: int = Query(default=1, ge=1, le=48)):
 
 @router.post("/nlp", response_model=NLQueryResponse)
 def nlp_summarize(req: NLQueryRequest):
-    logger.info(f"POST /nlp endpoint called with query='{req.query}', hours={req.timeframe.hours}")
+    logger.info(f"POST /nlp endpoint called with query='{req.query}', hours={req.timeframe.hours}, minutes={req.timeframe.minutes}")
     # Use enhanced query system that considers user intent in CloudWatch query generation
     # Use NLP-specific patterns for better analysis
-    entries = get_logs_exceptions(req.timeframe.hours, user_query=req.query, use_nlp_patterns=True)
+    entries = get_logs_exceptions(
+        hours=req.timeframe.hours, 
+        minutes=req.timeframe.minutes, 
+        user_query=req.query, 
+        use_nlp_patterns=True
+    )
     logger.info(f"Retrieved {len(entries)} logs for NLP analysis using user intent and NLP patterns")
     
     logger.info("Generating NLP response for logs using async processing")

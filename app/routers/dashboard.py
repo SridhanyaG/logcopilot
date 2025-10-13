@@ -86,12 +86,23 @@ def get_exceptions(
 
 @router.get("/stats", response_model=DashboardStats)
 def get_dashboard_stats(
-    hours: int = Query(24, description="Statistics for last N hours"),
+    hours: int = Query(default=None, ge=1, le=48, description="Statistics for last N hours"),
+    minutes: int = Query(default=None, ge=1, le=2880, description="Statistics for last N minutes"),
     log_group: Optional[str] = Query(None, description="Filter by log group"),
     db: Session = Depends(get_db)
 ):
     """Get dashboard statistics"""
-    start_time = datetime.utcnow() - timedelta(hours=hours)
+    # Handle both hours and minutes parameters
+    if minutes is not None:
+        start_time = datetime.utcnow() - timedelta(minutes=minutes)
+        time_range_desc = f"Last {minutes} minutes"
+    elif hours is not None:
+        start_time = datetime.utcnow() - timedelta(hours=hours)
+        time_range_desc = f"Last {hours} hours"
+    else:
+        # Default to 24 hours
+        start_time = datetime.utcnow() - timedelta(hours=24)
+        time_range_desc = "Last 24 hours"
     
     # Base query
     query = db.query(LogException).filter(LogException.timestamp >= start_time)
@@ -150,17 +161,28 @@ def get_dashboard_stats(
             )
             for exc in recent_exceptions
         ],
-        time_range=f"Last {hours} hours"
+        time_range=time_range_desc
     )
 
 @router.get("/trends")
 def get_trends(
-    hours: int = Query(24, description="Trend data for last N hours"),
+    hours: int = Query(default=None, ge=1, le=48, description="Trend data for last N hours"),
+    minutes: int = Query(default=None, ge=1, le=2880, description="Trend data for last N minutes"),
     log_group: Optional[str] = Query(None, description="Filter by log group"),
     db: Session = Depends(get_db)
 ):
     """Get exception trends over time"""
-    start_time = datetime.utcnow() - timedelta(hours=hours)
+    # Handle both hours and minutes parameters
+    if minutes is not None:
+        start_time = datetime.utcnow() - timedelta(minutes=minutes)
+        time_range_desc = f"Last {minutes} minutes"
+    elif hours is not None:
+        start_time = datetime.utcnow() - timedelta(hours=hours)
+        time_range_desc = f"Last {hours} hours"
+    else:
+        # Default to 24 hours
+        start_time = datetime.utcnow() - timedelta(hours=24)
+        time_range_desc = "Last 24 hours"
     
     query = db.query(LogException).filter(LogException.timestamp >= start_time)
     if log_group:
@@ -186,7 +208,7 @@ def get_trends(
             }
             for trend in hourly_trends
         ],
-        "time_range": f"Last {hours} hours"
+        "time_range": time_range_desc
     }
 
 @router.get("/scheduler/status")
