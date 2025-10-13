@@ -686,7 +686,9 @@ def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns
     Args:
         inclusion_patterns: List of patterns to include in the query
         exclusion_patterns: List of patterns to exclude from the query
-        user_query: Optional user query to analyze for additional intent-based patterns
+        user_query: Optional user natural language query for additional context
+        start_time: Optional start time for time range filtering
+        end_time: Optional end time for time range filtering
     
     Returns:
         CloudWatch Insights query string
@@ -715,9 +717,9 @@ Based on this user query, you should:
     # Add time range filter if provided
     time_filter = ""
     if start_time and end_time:
-        start_epoch = int(start_time.timestamp())
-        end_epoch = int(end_time.timestamp())
-        time_filter = f"| filter @timestamp >= {start_epoch} and @timestamp <= {end_epoch}"
+        start_ms = int(start_time.timestamp() * 1000)
+        end_ms = int(end_time.timestamp() * 1000)
+        time_filter = f"| filter @timestamp >= fromMillis({start_ms}) and @timestamp <= fromMillis({end_ms})"
     
     prompt = f"""
 You are an expert in AWS CloudWatch Insights queries. Generate a CloudWatch Insights query that:
@@ -739,7 +741,7 @@ CRITICAL REQUIREMENTS:
   * Use "like" with regex for patterns with special characters or error patterns (e.g., "Exception", "ERROR", "FATAL")
 - Combine all inclusion patterns with "or" on separate lines
 - Combine all exclusion patterns with "and" on separate lines
-{f"- MUST include time range filter: @timestamp >= {int(start_time.timestamp())} and @timestamp <= {int(end_time.timestamp())}" if start_time and end_time else ""}
+{f"- MUST include time range filter using fromMillis() and epoch milliseconds: @timestamp >= fromMillis({int(start_time.timestamp() * 1000)}) and @timestamp <= fromMillis({int(end_time.timestamp() * 1000)})" if start_time and end_time else ""}
 
 REQUIRED FORMAT:
 fields @timestamp, @message, @logStream, @log
@@ -867,6 +869,8 @@ def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_p
     Args:
         inclusion_patterns: List of patterns to include in the query
         exclusion_patterns: List of patterns to exclude from the query
+        start_time: Optional start time for time range filtering
+        end_time: Optional end time for time range filtering
     
     Returns:
         Simple CloudWatch Insights query string
@@ -911,9 +915,9 @@ def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_p
     # Add time range filter if provided
     time_filter = ""
     if start_time and end_time:
-        start_epoch = int(start_time.timestamp())
-        end_epoch = int(end_time.timestamp())
-        time_filter = f"| filter @timestamp >= {start_epoch} and @timestamp <= {end_epoch}\n"
+        start_ms = int(start_time.timestamp() * 1000)
+        end_ms = int(end_time.timestamp() * 1000)
+        time_filter = f"| filter @timestamp >= fromMillis({start_ms}) and @timestamp <= fromMillis({end_ms})\n"
     
     # Build the complete query
     query = f"""fields @timestamp, @message, @logStream, @log
