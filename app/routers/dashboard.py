@@ -293,6 +293,21 @@ def get_releases():
         "uat-green": "R24"
     }
 
+@router.get("/pods", response_model=List[str])
+def get_pods(environment: str = Query(..., description="Environment name")):
+    """Get list of pods for a specific environment"""
+    # Valid environments
+    valid_environments = ["dev-experiment", "dev-blue", "dev-green", "uat-blue", "uat-green"]
+    
+    if environment not in valid_environments:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid environment. Valid environments are: {', '.join(valid_environments)}"
+        )
+    
+    # Same workload (crocin-backend) for all environments
+    return ["crocin-backend"]
+
 @router.get("/configs", response_model=List[dict])
 def get_monitoring_configs(db: Session = Depends(get_db)):
     """Get monitoring configurations"""
