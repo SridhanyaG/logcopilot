@@ -727,9 +727,10 @@ You are an expert in AWS CloudWatch Insights queries. Generate a CloudWatch Insi
 1. Returns fields: @timestamp, @message, @logStream, @log
 2. MUST include ALL of these inclusion patterns: {inclusion_text}
 3. EXCLUDES log messages that contain ANY of these exclusion patterns: {exclusion_text}
-4. Sorts by @timestamp in descending order
-5. Limits results to 10000
-{f"6. Filters by time range: {start_time} to {end_time}" if start_time and end_time else ""}
+4. Filters by K8s workload: @entity.Attributes.K8s.Workload = 'gen-ai-bodhi-content-experiment'
+5. Sorts by @timestamp in descending order
+6. Limits results to 10000
+{f"7. Filters by time range: {start_time} to {end_time}" if start_time and end_time else ""}
 
 {user_query_context}
 

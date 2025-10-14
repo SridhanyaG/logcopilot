@@ -244,6 +244,55 @@ def start_scheduler():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/environments", response_model=List[str])
+def get_environments():
+    """Get list of available environments"""
+    return [
+        "dev-blue",
+        "dev-green", 
+        "dev-experiment",
+        "uat-blue",
+        "uat-green"
+    ]
+
+@router.get("/repositories", response_model=List[str])
+def get_repositories():
+    """Get list of available repositories"""
+    return [
+        "https://github.com/SridhanyaG/samplecontentgenerator",
+        "https://github.com/SridhanyaG/copilotdashboard"
+    ]
+
+@router.get("/log-groups", response_model=List[str])
+def get_log_groups(environment: str = Query(..., description="Environment name")):
+    """Get list of available log groups for a specific environment"""
+    # Environment to log groups mapping
+    environment_log_groups = {
+        "dev-experiment": ["/ecs/crocin-backend"],
+        "dev-blue": ["/ecs/crocin-backend"],
+        "dev-green": ["/ecs/crocin-backend"]
+    }
+    
+    if environment not in environment_log_groups:
+        valid_environments = list(environment_log_groups.keys())
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid environment. Valid environments are: {', '.join(valid_environments)}"
+        )
+    
+    return environment_log_groups[environment]
+
+@router.get("/releases", response_model=dict)
+def get_releases():
+    """Get release mapping for all environments"""
+    return {
+        "dev-experiment": "R24",
+        "dev-blue": "R24",
+        "dev-green": "R24",
+        "uat-blue": "R24",
+        "uat-green": "R24"
+    }
+
 @router.get("/configs", response_model=List[dict])
 def get_monitoring_configs(db: Session = Depends(get_db)):
     """Get monitoring configurations"""

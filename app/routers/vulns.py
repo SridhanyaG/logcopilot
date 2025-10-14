@@ -27,14 +27,13 @@ def _as_dict(obj: Any) -> Dict[str, Any]:
 def list_vulnerabilities(
     severity: Optional[List[str]] = Query(None, description="severity=HIGH or severity=HIGH,CRITICAL"),
     env: Optional[str] = Query(None),
-    release_id: Optional[str] = Query(None),
-    repo: Optional[str] = Query(None),
     image: Optional[str] = Query(None),
+    image_digest: Optional[str] = Query(None, description="Image digest (SHA256)"),
     timeframe: Optional[str] = Query("last-build"),
 ):
     logger.info(
-        "GET /vulnerabilities filters: env=%s release_id=%s repo=%s image=%s timeframe=%s severity=%s",
-        env, release_id, repo, image, timeframe, severity,
+        "GET /vulnerabilities filters: env=%s image=%s image_digest=%s timeframe=%s severity=%s",
+        env, image, image_digest, timeframe, severity,
     )
 
     # 1) Fetch base data
@@ -70,17 +69,22 @@ def list_vulnerabilities(
         # add UI-friendly defaults up-front so filters can match (overwrite None)
         row["repo"] = coalesce(row.get("repo"), "org/samplecontentgenerator")
         row["image"] = coalesce(row.get("image"), "sha256:exampledigest123")
-        # prefer query release_id if provided; else keep existing or fallback
-        row["release_id"] = (
-            release_id
-            if release_id not in (None, "", "null")
-            else coalesce(row.get("release_id"), "v2.1.4")
-        )
+        # set default release_id
+        row["release_id"] = coalesce(row.get("release_id"), "v2.1.4")
         row["first_seen_build"] = coalesce(row.get("first_seen_build"), "build-001")
         row["first_seen_time"] = coalesce(row.get("first_seen_time"), now.isoformat())
 
         if not row.get("fixed_version") and row.get("package_name") == "openssl":
             row["fixed_version"] = "3.5.2"
+
+        # Handle image_digest and image_tag logic
+        if image_digest:
+            row["image_digest"] = image_digest
+            row["image_tag"] = None
+        else:
+            # If image_digest is None, set image_tag to "latest"
+            row["image_digest"] = None
+            row["image_tag"] = "latest"
 
         enriched_rows.append(row)
 
@@ -93,15 +97,11 @@ def list_vulnerabilities(
         if requested_sev and row["severity"] not in requested_sev:
             continue
         # optional exact matches (now fields exist / not None)
-        if repo and row.get("repo") != repo:
-            continue
         if image and row.get("image") != image:
-            continue
-        if release_id and row.get("release_id") != release_id:
             continue
         filtered_rows.append(row)
 
-    logger.info("After repo/image/release/severity filters: %d rows", len(filtered_rows))
+    logger.info("After image/severity filters: %d rows", len(filtered_rows))
 
     # 4) Timeframe (UTC)
     if timeframe and timeframe not in ("last-build", "", None):
