@@ -26,14 +26,38 @@ def _as_dict(obj: Any) -> Dict[str, Any]:
 @router.get("/", response_model=List[VulnerabilityFinding], response_model_exclude_none=True)
 def list_vulnerabilities(
     severity: Optional[List[str]] = Query(None, description="severity=HIGH or severity=HIGH,CRITICAL"),
-    env: Optional[str] = Query(None),
-    image: Optional[str] = Query(None),
+    repository_name: Optional[str] = Query(None, description="Repository name"),
     image_digest: Optional[str] = Query(None, description="Image digest (SHA256)"),
-    timeframe: Optional[str] = Query("last-build"),
+    timeframe: Optional[str] = Query(None),
 ):
+    # Validate mutual exclusivity
+    if image_digest and timeframe:
+        raise HTTPException(
+            status_code=400,
+            detail="image_digest and timeframe are mutually exclusive. Provide only one of them."
+        )
+    
+    # Set defaults based on parameters
+    if repository_name:
+        # When repository_name is provided, use repository value and timeframe as "latest"
+        effective_timeframe = "latest"
+        effective_image_digest = None
+    elif image_digest:
+        # When image_digest is provided, use it and no timeframe
+        effective_timeframe = None
+        effective_image_digest = image_digest
+    elif timeframe:
+        # When only timeframe is provided
+        effective_timeframe = timeframe
+        effective_image_digest = None
+    else:
+        # Default case
+        effective_timeframe = "last-build"
+        effective_image_digest = None
+
     logger.info(
-        "GET /vulnerabilities filters: env=%s image=%s image_digest=%s timeframe=%s severity=%s",
-        env, image, image_digest, timeframe, severity,
+        "GET /vulnerabilities filters: repository_name=%s image_digest=%s timeframe=%s severity=%s (effective: timeframe=%s, image_digest=%s)",
+        repository_name, image_digest, timeframe, severity, effective_timeframe, effective_image_digest,
     )
 
     # 1) Fetch base data
@@ -78,8 +102,8 @@ def list_vulnerabilities(
             row["fixed_version"] = "3.5.2"
 
         # Handle image_digest and image_tag logic
-        if image_digest:
-            row["image_digest"] = image_digest
+        if effective_image_digest:
+            row["image_digest"] = effective_image_digest
             row["image_tag"] = None
         else:
             # If image_digest is None, set image_tag to "latest"
@@ -97,20 +121,20 @@ def list_vulnerabilities(
         if requested_sev and row["severity"] not in requested_sev:
             continue
         # optional exact matches (now fields exist / not None)
-        if image and row.get("image") != image:
+        if repository_name and row.get("image") != repository_name:
             continue
         filtered_rows.append(row)
 
-    logger.info("After image/severity filters: %d rows", len(filtered_rows))
+    logger.info("After repository_name/severity filters: %d rows", len(filtered_rows))
 
     # 4) Timeframe (UTC)
-    if timeframe and timeframe not in ("last-build", "", None):
+    if effective_timeframe and effective_timeframe not in ("last-build", "", None):
         cutoff = None
-        if timeframe == "1d":
+        if effective_timeframe == "1d":
             cutoff = now - timedelta(days=1)
-        elif timeframe == "1w":
+        elif effective_timeframe == "1w":
             cutoff = now - timedelta(weeks=1)
-        elif timeframe == "1m":
+        elif effective_timeframe == "1m":
             cutoff = now - timedelta(days=30)
 
         if cutoff:
@@ -124,7 +148,7 @@ def list_vulnerabilities(
                 except Exception:
                     kept.append(row)  # keep if unparsable
             filtered_rows = kept
-            logger.info("After timeframe filter '%s': %d rows", timeframe, len(filtered_rows))
+            logger.info("After timeframe filter '%s': %d rows", effective_timeframe, len(filtered_rows))
 
     # 5) Map to model (log any schema drops)
     result: List[VulnerabilityFinding] = []
