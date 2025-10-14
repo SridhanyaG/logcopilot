@@ -67,20 +67,62 @@ def get_critical_high_vulnerabilities() -> List[VulnerabilityFinding]:
     return results
 
 
-def get_logs_exceptions(hours: int = None, minutes: int = None, user_query: str = None, use_nlp_patterns: bool = False) -> List[LogEntry]:
-    # Handle both hours and minutes parameters
-    if minutes is not None:
+def get_logs_exceptions(hours: int = None, minutes: int = None, start_time: str = None, end_time: str = None, user_query: str = None, use_nlp_patterns: bool = False, podname: str = None) -> List[LogEntry]:
+    # Handle time parameters - start_time/end_time takes precedence
+    if start_time and end_time:
+        try:
+            logger.info(f"Parsing start_time: {start_time}, end_time: {end_time}")
+            
+            # Parse datetime strings and assume IST timezone
+            start = datetime.fromisoformat(start_time)
+            end = datetime.fromisoformat(end_time)
+            
+            # If no timezone info, assume IST (UTC+5:30)
+            if start.tzinfo is None:
+                ist = timezone(timedelta(hours=5, minutes=30))
+                start = start.replace(tzinfo=ist)
+            if end.tzinfo is None:
+                ist = timezone(timedelta(hours=5, minutes=30))
+                end = end.replace(tzinfo=ist)
+                
+            # Convert IST to UTC for CloudWatch
+            start_utc = start.astimezone(timezone.utc)
+            end_utc = end.astimezone(timezone.utc)
+            start = start_utc
+            end = end_utc
+            logger.info(f"Successfully parsed time range (IST->UTC): {start} to {end}")
+        except Exception as e:
+            logger.error(f"Error parsing datetime: {e}")
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail=f"Invalid datetime format. Use ISO format (e.g., '2023-01-01T00:00:00'): {e}")
+    elif minutes is not None:
         total_minutes = minutes
-        logger.info(f"Starting exception retrieval for {minutes} minutes")
+        # Use IST timezone for minutes parameter, then convert to UTC
+        ist = timezone(timedelta(hours=5, minutes=30))
+        start_ist = datetime.now(ist) - timedelta(minutes=total_minutes)
+        end_ist = datetime.now(ist)
+        start = start_ist.astimezone(timezone.utc)
+        end = end_ist.astimezone(timezone.utc)
+        logger.info(f"Starting exception retrieval for {minutes} minutes (IST->UTC)")
     elif hours is not None:
         total_minutes = hours * 60
-        logger.info(f"Starting exception retrieval for {hours} hours")
+        # Use IST timezone for hours parameter, then convert to UTC
+        ist = timezone(timedelta(hours=5, minutes=30))
+        start_ist = datetime.now(ist) - timedelta(minutes=total_minutes)
+        end_ist = datetime.now(ist)
+        start = start_ist.astimezone(timezone.utc)
+        end = end_ist.astimezone(timezone.utc)
+        logger.info(f"Starting exception retrieval for {hours} hours (IST->UTC)")
     else:
         total_minutes = 60  # Default to 1 hour
-        logger.info("Starting exception retrieval for default 1 hour")
+        # Use IST timezone for default case, then convert to UTC
+        ist = timezone(timedelta(hours=5, minutes=30))
+        start_ist = datetime.now(ist) - timedelta(minutes=total_minutes)
+        end_ist = datetime.now(ist)
+        start = start_ist.astimezone(timezone.utc)
+        end = end_ist.astimezone(timezone.utc)
+        logger.info("Starting exception retrieval for default 1 hour (IST->UTC)")
     
-    start = datetime.now(timezone.utc) - timedelta(minutes=total_minutes)
-    end = datetime.now(timezone.utc)
     logger.info(f"Query time range: {start} to {end}")
 
     # Get inclusion and exclusion patterns from config
@@ -104,7 +146,7 @@ def get_logs_exceptions(hours: int = None, minutes: int = None, user_query: str 
     logger.info(f"Using exclusion patterns: {exclusion_patterns}")
 
     # Generate CloudWatch query using LLM with time range
-    query = _generate_cloudwatch_query(inclusion_patterns, exclusion_patterns, user_query, start, end)
+    query = _generate_cloudwatch_query(inclusion_patterns, exclusion_patterns, user_query, start, end, podname)
     logger.info(f"Generated CloudWatch query: {query}")
 
     client = _logs_client()
@@ -124,7 +166,7 @@ def get_logs_exceptions(hours: int = None, minutes: int = None, user_query: str 
             logger.info("Attempting fallback to simple query generation")
             # Try with a simple query
             from app.services.llm import _generate_simple_cloudwatch_query
-            simple_query = _generate_simple_cloudwatch_query(inclusion_patterns, exclusion_patterns, start, end)
+            simple_query = _generate_simple_cloudwatch_query(inclusion_patterns, exclusion_patterns, start, end, podname)
             logger.info(f"Generated fallback simple query: {simple_query}")
             
             try:

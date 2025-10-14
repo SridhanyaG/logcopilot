@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 import asyncio
 
 from ..models import ExceptionsResponse, NLQueryRequest, NLQueryResponse, Timeframe
@@ -6,15 +6,64 @@ from ..services.aws import get_logs_exceptions
 from ..services.llm import summarize_exceptions, summarize_exceptions_async
 from ..utils import get_logger
 
+def log_markdown_red(markdown_text: str):
+    """Log markdown text in red color for better visibility"""
+    # ANSI escape codes for red color
+    RED = '\033[91m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    
+    # Format the markdown text with red color and bold
+    formatted_text = f"{RED}{BOLD}{markdown_text}{RESET}"
+    logger.info(f"\n{formatted_text}\n")
+
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
 
 @router.get("/exceptions", response_model=ExceptionsResponse)
-def exceptions(hours: int = Query(default=None, ge=1, le=48), minutes: int = Query(default=None, ge=1, le=2880)):
-    logger.info(f"GET /exceptions endpoint called with hours={hours}, minutes={minutes}")
-    entries = get_logs_exceptions(hours=hours, minutes=minutes)
+def exceptions(
+    hours: int = Query(default=None, ge=1, le=48), 
+    minutes: int = Query(default=None, ge=1, le=2880),
+    start_time: str = Query(default=None, description="Start time in ISO format"),
+    end_time: str = Query(default=None, description="End time in ISO format"),
+    podname: str = Query(default=None, description="Pod/workload name to filter by")
+):
+    # Validate mutual exclusivity
+    # Check if any of the individual time parameters are provided
+    has_hours = hours is not None
+    has_minutes = minutes is not None
+    has_start_time = start_time is not None
+    has_end_time = end_time is not None
+    
+    # Count how many different time parameter types are provided
+    time_param_count = sum([has_hours, has_minutes, has_start_time or has_end_time])
+    
+    if time_param_count > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Only one time parameter can be provided: hours, minutes, or start_time/end_time pair"
+        )
+    
+    if start_time and not end_time:
+        raise HTTPException(
+            status_code=400,
+            detail="Both start_time and end_time must be provided together"
+        )
+    
+    if end_time and not start_time:
+        raise HTTPException(
+            status_code=400,
+            detail="Both start_time and end_time must be provided together"
+        )
+
+    logger.info(f"GET /exceptions endpoint called with hours={hours}, minutes={minutes}, start_time={start_time}, end_time={end_time}, podname={podname}")
+    try:
+        entries = get_logs_exceptions(hours=hours, minutes=minutes, start_time=start_time, end_time=end_time, podname=podname)
+    except Exception as e:
+        logger.error(f"Error in get_logs_exceptions: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
     logger.info(f"Retrieved {len(entries)} exceptions from CloudWatch")
     
     # Generate AI summary if there are exceptions
@@ -25,6 +74,8 @@ def exceptions(hours: int = Query(default=None, ge=1, le=48), minutes: int = Que
             # Use async processing for better performance with large logs
             summary = asyncio.run(summarize_exceptions_async(entries, max_tokens=3000))
             logger.info(f"AI summary generated successfully, length: {len(summary)} characters")
+            # Display the markdown summary in red color
+            log_markdown_red(summary)
         except Exception as e:
             logger.error(f"Error generating AI summary: {str(e)}")
             summary = f"Error generating summary: {str(e)}"
@@ -54,6 +105,8 @@ def nlp_summarize(req: NLQueryRequest):
         # Use async processing for better performance with large logs
         answer = asyncio.run(summarize_exceptions_async(entries, max_tokens=3000))
         logger.info(f"NLP response generated successfully, length: {len(answer)} characters")
+        # Display the markdown response in red color
+        log_markdown_red(answer)
     except Exception as e:
         logger.error(f"Error generating NLP response: {str(e)}")
         answer = f"Error generating response: {str(e)}"

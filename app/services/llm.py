@@ -679,7 +679,7 @@ def _should_use_strcontains(pattern: str) -> bool:
     return should_use_strcontains
 
 
-def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str], user_query: str = None, start_time: datetime = None, end_time: datetime = None) -> str:
+def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str], user_query: str = None, start_time: datetime = None, end_time: datetime = None, podname: str = None) -> str:
     """
     Generate a CloudWatch Insights query using LLM based on inclusion and exclusion patterns.
     
@@ -689,6 +689,7 @@ def _generate_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns
         user_query: Optional user natural language query for additional context
         start_time: Optional start time for time range filtering
         end_time: Optional end time for time range filtering
+        podname: Optional pod name to filter by
     
     Returns:
         CloudWatch Insights query string
@@ -719,7 +720,7 @@ Based on this user query, you should:
     if start_time and end_time:
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
-        time_filter = f"| filter @timestamp >= fromMillis({start_ms}) and @timestamp <= fromMillis({end_ms})"
+        time_filter = f"| filter @timestamp >= {start_ms} and @timestamp <= {end_ms}"
     
     prompt = f"""
 You are an expert in AWS CloudWatch Insights queries. Generate a CloudWatch Insights query that:
@@ -727,10 +728,10 @@ You are an expert in AWS CloudWatch Insights queries. Generate a CloudWatch Insi
 1. Returns fields: @timestamp, @message, @logStream, @log
 2. MUST include ALL of these inclusion patterns: {inclusion_text}
 3. EXCLUDES log messages that contain ANY of these exclusion patterns: {exclusion_text}
-4. Filters by K8s workload: @entity.Attributes.K8s.Workload = 'gen-ai-bodhi-content-experiment'
 5. Sorts by @timestamp in descending order
 6. Limits results to 10000
 {f"7. Filters by time range: {start_time} to {end_time}" if start_time and end_time else ""}
+{f"8. Filters by pod name: @logStream like /{podname}/" if podname else ""}
 
 {user_query_context}
 
@@ -742,7 +743,6 @@ CRITICAL REQUIREMENTS:
   * Use "like" with regex for patterns with special characters or error patterns (e.g., "Exception", "ERROR", "FATAL")
 - Combine all inclusion patterns with "or" on separate lines
 - Combine all exclusion patterns with "and" on separate lines
-{f"- MUST include time range filter using fromMillis() and epoch milliseconds: @timestamp >= fromMillis({int(start_time.timestamp() * 1000)}) and @timestamp <= fromMillis({int(end_time.timestamp() * 1000)})" if start_time and end_time else ""}
 
 REQUIRED FORMAT:
 fields @timestamp, @message, @logStream, @log
@@ -863,7 +863,7 @@ def _validate_cloudwatch_query(query: str) -> str:
     return query
 
 
-def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str], start_time: datetime = None, end_time: datetime = None) -> str:
+def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_patterns: List[str], start_time: datetime = None, end_time: datetime = None, podname: str = None) -> str:
     """
     Generate a simple, reliable CloudWatch Insights query that's more likely to work.
     
@@ -872,6 +872,7 @@ def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_p
         exclusion_patterns: List of patterns to exclude from the query
         start_time: Optional start time for time range filtering
         end_time: Optional end time for time range filtering
+        podname: Optional pod name to filter by
     
     Returns:
         Simple CloudWatch Insights query string
@@ -918,7 +919,12 @@ def _generate_simple_cloudwatch_query(inclusion_patterns: List[str], exclusion_p
     if start_time and end_time:
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
-        time_filter = f"| filter @timestamp >= fromMillis({start_ms}) and @timestamp <= fromMillis({end_ms})\n"
+        time_filter = f"| filter @timestamp >= {start_ms} and @timestamp <= {end_ms}\n"
+    
+    # Add podname filter if provided
+    podname_filter = ""
+    if podname:
+        podname_filter = f"|| filter @logStream like /{podname}/\n"
     
     # Build the complete query
     query = f"""fields @timestamp, @message, @logStream, @log
