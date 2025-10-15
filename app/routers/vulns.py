@@ -26,7 +26,7 @@ def _as_dict(obj: Any) -> Dict[str, Any]:
 @router.get("/", response_model=List[VulnerabilityFinding], response_model_exclude_none=True)
 def list_vulnerabilities(
     severity: Optional[List[str]] = Query(None, description="severity=HIGH or severity=HIGH,CRITICAL"),
-    repository_name: Optional[str] = Query(None, description="Repository name"),
+    image: Optional[str] = Query(None, description="Image name"),
     image_digest: Optional[str] = Query(None, description="Image digest (SHA256)"),
     timeframe: Optional[str] = Query(None),
 ):
@@ -38,8 +38,8 @@ def list_vulnerabilities(
         )
     
     # Set defaults based on parameters
-    if repository_name:
-        # When repository_name is provided, use repository value and timeframe as "latest"
+    if image:
+        # When image is provided, use image value and timeframe as "latest"
         effective_timeframe = "latest"
         effective_image_digest = None
     elif image_digest:
@@ -56,8 +56,8 @@ def list_vulnerabilities(
         effective_image_digest = None
 
     logger.info(
-        "GET /vulnerabilities filters: repository_name=%s image_digest=%s timeframe=%s severity=%s (effective: timeframe=%s, image_digest=%s)",
-        repository_name, image_digest, timeframe, severity, effective_timeframe, effective_image_digest,
+        "GET /vulnerabilities filters: image=%s image_digest=%s timeframe=%s severity=%s (effective: timeframe=%s, image_digest=%s)",
+        image, image_digest, timeframe, severity, effective_timeframe, effective_image_digest,
     )
 
     # 1) Fetch base data
@@ -92,7 +92,11 @@ def list_vulnerabilities(
 
         # add UI-friendly defaults up-front so filters can match (overwrite None)
         row["repo"] = coalesce(row.get("repo"), "org/samplecontentgenerator")
-        row["image"] = coalesce(row.get("image"), "sha256:exampledigest123")
+        # Set image based on the provided image parameter or use default
+        if image:
+            row["image"] = image
+        else:
+            row["image"] = coalesce(row.get("image"), "sha256:exampledigest123")
         # set default release_id
         row["release_id"] = coalesce(row.get("release_id"), "v2.1.4")
         row["first_seen_build"] = coalesce(row.get("first_seen_build"), "build-001")
@@ -121,11 +125,11 @@ def list_vulnerabilities(
         if requested_sev and row["severity"] not in requested_sev:
             continue
         # optional exact matches (now fields exist / not None)
-        if repository_name and row.get("image") != repository_name:
+        if image and row.get("image") != image:
             continue
         filtered_rows.append(row)
 
-    logger.info("After repository_name/severity filters: %d rows", len(filtered_rows))
+    logger.info("After image/severity filters: %d rows", len(filtered_rows))
 
     # 4) Timeframe (UTC)
     if effective_timeframe and effective_timeframe not in ("last-build", "", None):

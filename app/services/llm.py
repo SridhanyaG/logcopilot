@@ -349,7 +349,7 @@ NVD Data:
     return _call_llm(prompt, temperature=0.2, max_tokens=600, operation_name="remediation suggestion generation")
 
 
-async def _summarize_chunk_async(chunk: List[LogEntry], chunk_index: int, user_query: str = None) -> str:
+async def _summarize_chunk_async(chunk: List[LogEntry], chunk_index: int, user_query: str = None, is_specific_endpoint_query: bool = False) -> str:
     """
     Summarize a single chunk of log entries asynchronously.
     
@@ -357,6 +357,7 @@ async def _summarize_chunk_async(chunk: List[LogEntry], chunk_index: int, user_q
         chunk: List of log entries to summarize
         chunk_index: Index of the chunk for logging purposes
         user_query: The user's specific query to focus the analysis on
+        is_specific_endpoint_query: Whether this is a specific endpoint query requiring individual timestamps
     
     Returns:
         Summary of the chunk
@@ -375,8 +376,77 @@ async def _summarize_chunk_async(chunk: List[LogEntry], chunk_index: int, user_q
     user_query_context = ""
     if user_query:
         user_query_context = f"\n**USER QUERY**: {user_query}\n**INSTRUCTION**: Focus your analysis on answering this specific question while providing comprehensive insights.\n"
+        
+        # Use the passed parameter instead of recalculating
+        if is_specific_endpoint_query:
+            user_query_context += f"\n**CRITICAL**: If the user asks about a specific endpoint, show ONLY that endpoint's data in the API Endpoint Performance table. Do NOT include other endpoints. Show INDIVIDUAL requests with timestamp, endpoint, method, response time, and status code. Do NOT show averages or counts.\n"
     
-    prompt = f"""Analyze the log entries below and provide a comprehensive summary in markdown format. The logs may contain exceptions, errors, INFO messages, API responses, or other types of entries.
+    if is_specific_endpoint_query:
+        prompt = f"""🚨🚨🚨 SPECIFIC ENDPOINT QUERY DETECTED 🚨🚨🚨
+You are analyzing logs for a SPECIFIC ENDPOINT query. You MUST follow these rules:
+
+1. Show ONLY the requested endpoint in the API Endpoint Performance table
+2. Show INDIVIDUAL requests with timestamps, NOT averages or counts
+3. Use this EXACT table format (NO DEVIATIONS):
+| Timestamp | Endpoint | Method | Response Time | Status Code |
+|---|---|---|---|---|
+| [timestamp] | [endpoint] | [method] | [individual time] | [status] |
+
+🚨 CRITICAL: Do NOT use "Avg Response Time" or "Count" columns. Show each individual request with its timestamp and response time.
+
+⚠️ WARNING: If you use "Avg Response Time" or "Count" columns, you are WRONG. The user specifically asked for individual requests with timestamps.
+
+Analyze the log entries below and provide a comprehensive summary in markdown format. The logs may contain exceptions, errors, INFO messages, API responses, or other types of entries.
+
+{user_query_context}
+REQUIRED OUTPUT FORMAT (return as a single markdown string):
+
+## Summary
+Provide a brief overview of what was found in the logs.
+
+## Log Entry Types
+List the different types of log entries found (e.g., exceptions, INFO messages, API responses, etc.) with their counts.
+
+## Exception Analysis (if any exceptions found)
+If exceptions or errors are present, create a table grouping them:
+
+| Exception Type | Count | Root Cause | Affected Components |
+|---|---|---|---|
+| [Exception name] | [count] | [brief cause] | [components] |
+
+## API Endpoint Performance (if API calls found)
+🚨 **CRITICAL**: For specific endpoint queries, use this EXACT format:
+| Timestamp | Endpoint | Method | Response Time | Status Code |
+|---|---|---|---|---|
+| [timestamp] | [endpoint] | [method] | [individual time] | [status] |
+
+## Key Findings
+- List important observations
+- Performance issues
+- Error patterns
+- Success patterns
+
+## Recommendations
+- Immediate actions needed
+- Monitoring suggestions
+- Performance optimizations
+
+Logs to analyze:
+{joined}
+
+CRITICAL REQUIREMENTS:
+- Return the entire response as a single markdown-formatted string
+- Use proper markdown syntax for headers (##), tables (|), and lists (-)
+- Do NOT include any code blocks, backticks, or special formatting markers
+- If no exceptions are found, focus on other log types (INFO, API responses, etc.)
+- Extract actual endpoint URLs, response times, and status codes when available
+- Group similar exceptions together
+- Provide actionable recommendations
+- Ensure the output is a clean markdown string that can be directly rendered
+- **FOR SPECIFIC ENDPOINT QUERIES**: Show individual requests with timestamps, NOT averages or counts
+"""
+    else:
+        prompt = f"""Analyze the log entries below and provide a comprehensive summary in markdown format. The logs may contain exceptions, errors, INFO messages, API responses, or other types of entries.
 
 **SPECIAL INSTRUCTION FOR RESPONSE TIMES**: If the user asks specifically about response times for a particular endpoint (e.g., "response times for /generate-content"), show INDIVIDUAL response times for that endpoint, not averages. For example, show "8057.2ms, 4921.5ms, 6234.1ms" instead of "6404.3ms (avg)".
 {user_query_context}
@@ -398,11 +468,22 @@ If exceptions or errors are present, create a table grouping them:
 ## API Endpoint Performance (if API calls found)
 If API endpoints are mentioned, create a table showing performance:
 
+🚨 **CRITICAL TABLE FORMAT RULE**: If user asks about a specific endpoint, use this format:
+| Timestamp | Endpoint | Method | Response Time | Status Code |
+|---|---|---|---|---|
+| [timestamp] | [specific endpoint] | [method] | [individual time] | [status] |
+| [timestamp] | [specific endpoint] | [method] | [individual time] | [status] |
+
+For general queries (all endpoints), use this format:
 | Endpoint | Method | Avg Response Time | Status | Count |
 |---|---|---|---|---|
 | [endpoint] | [GET/POST/etc] | [avg time] | [status] | [count] |
 
-**CRITICAL INSTRUCTION**: When the user asks specifically about response times for a particular endpoint (e.g., "response times for /generate-content"), show INDIVIDUAL response times for that endpoint, not averages. For example, show "8057.2ms, 4921.5ms, 6234.1ms" instead of "6404.3ms (avg)".
+**CRITICAL INSTRUCTIONS**: 
+1. When the user asks specifically about response times for a particular endpoint (e.g., "response times for /generate-content"), show INDIVIDUAL requests with timestamps, not averages or counts.
+2. If the user asks about a specific endpoint (e.g., "/generate-content"), show ONLY that endpoint in the table. Do NOT include other endpoints.
+3. For specific endpoint queries, use table format: | Timestamp | Endpoint | Method | Response Time | Status Code |
+4. For general queries, use table format: | Endpoint | Method | Avg Response Time | Status | Count |
 
 ## Key Findings
 - List important observations
@@ -428,6 +509,8 @@ CRITICAL REQUIREMENTS:
 - Provide actionable recommendations
 - Ensure the output is a clean markdown string that can be directly rendered
 - **RESPONSE TIME INSTRUCTION**: When user asks specifically about response times for a particular endpoint, show INDIVIDUAL response times (e.g., "8057.2ms, 4921.5ms, 6234.1ms") instead of averages
+- **ENDPOINT FILTERING**: If user asks about a specific endpoint (e.g., "/generate-content"), show ONLY that endpoint in the API Endpoint Performance table. Do NOT include other endpoints
+- **INDIVIDUAL TIMES FOR SPECIFIC ENDPOINTS**: When showing a specific endpoint, display individual response times (e.g., "8057.2ms, 4921.5ms, 6234.1ms") and change table header from "Avg Response Time" to "Response Time"
 """
     
     try:
@@ -437,6 +520,76 @@ CRITICAL REQUIREMENTS:
     except Exception as e:
         logger.error(f"Error analyzing chunk {chunk_index}: {str(e)}")
         return f"Error analyzing chunk {chunk_index}: {str(e)}"
+
+
+async def summarize_specific_endpoint_async(entries: List[LogEntry], user_query: str) -> str:
+    """
+    Summarize logs for a specific endpoint query, showing individual requests with timestamps.
+    
+    Args:
+        entries: List of log entries to summarize
+        user_query: The user's specific query to focus the analysis on
+    
+    Returns:
+        Summary with individual requests and timestamps
+    """
+    logger.info(f"Starting specific endpoint analysis for {len(entries)} entries")
+    
+    if not entries:
+        return "No log entries found in the selected timeframe."
+    
+    # Join all entries
+    joined = "\n\n".join(
+        f"[{e.timestamp.isoformat()}] {e.message[:2000]}" for e in entries
+    )
+    
+    prompt = f"""You are analyzing logs for a SPECIFIC ENDPOINT query. The user asked: "{user_query}"
+
+🚨🚨🚨 CRITICAL INSTRUCTIONS 🚨🚨🚨
+You MUST show individual requests with timestamps. Do NOT use averages or counts.
+
+REQUIRED OUTPUT FORMAT:
+
+## Summary
+Brief overview of the specific endpoint analysis.
+
+## Log Entry Types
+List the different types of log entries found.
+
+## Exception Analysis (if any exceptions found)
+| Exception Type | Count | Root Cause | Affected Components |
+|---|---|---|---|
+| [Exception name] | [count] | [brief cause] | [components] |
+
+## API Endpoint Performance
+🚨 MANDATORY FORMAT - Show individual requests:
+| Timestamp | Endpoint | Method | Response Time | Status Code |
+|---|---|---|---|---|
+| [timestamp] | [endpoint] | [method] | [individual time] | [status] |
+| [timestamp] | [endpoint] | [method] | [individual time] | [status] |
+
+## Key Findings
+- List important observations
+- Performance issues
+- Error patterns
+
+## Recommendations
+- Immediate actions needed
+- Monitoring suggestions
+
+Logs to analyze:
+{joined}
+
+CRITICAL: Extract individual response times and timestamps from the logs. Do NOT calculate averages.
+"""
+    
+    try:
+        result = await _call_llm_async(prompt, temperature=0.2, max_tokens=2000, operation_name="specific endpoint analysis")
+        logger.info(f"Specific endpoint analysis completed, result length: {len(result)} characters")
+        return result
+    except Exception as e:
+        logger.error(f"Error in specific endpoint analysis: {str(e)}")
+        return f"Error analyzing specific endpoint: {str(e)}"
 
 
 async def summarize_exceptions_async(entries: List[LogEntry], max_tokens: int = 3000, user_query: str = None) -> str:
@@ -457,18 +610,29 @@ async def summarize_exceptions_async(entries: List[LogEntry], max_tokens: int = 
         logger.info("No entries to summarize, returning default message")
         return "No log entries found in the selected timeframe."
     
+    # Detect if this is a specific endpoint query
+    is_specific_endpoint_query = False
+    if user_query:
+        is_specific_endpoint_query = any(endpoint in user_query.lower() for endpoint in ['/generate-content', '/topics', '/therapeutic-areas', '/data-preview'])
+        logger.info(f"🔍 SPECIFIC ENDPOINT DETECTION: user_query='{user_query}', is_specific_endpoint_query={is_specific_endpoint_query}")
+    
+    # If this is a specific endpoint query, use the dedicated function
+    if is_specific_endpoint_query:
+        logger.info("🎯 Using specific endpoint analysis function")
+        return await summarize_specific_endpoint_async(entries, user_query)
+    
     # Chunk the entries based on token count
     chunks = _chunk_logs_by_tokens(entries, max_tokens)
     
     if len(chunks) == 1:
         logger.info("Single chunk detected, processing directly")
-        return await _summarize_chunk_async(chunks[0], 0, user_query)
+        return await _summarize_chunk_async(chunks[0], 0, user_query, is_specific_endpoint_query)
     
     logger.info(f"Processing {len(chunks)} chunks in parallel")
     
     # Process all chunks in parallel
     chunk_tasks = [
-        _summarize_chunk_async(chunk, i, user_query) 
+        _summarize_chunk_async(chunk, i, user_query, is_specific_endpoint_query) 
         for i, chunk in enumerate(chunks)
     ]
     
@@ -491,7 +655,7 @@ async def summarize_exceptions_async(entries: List[LogEntry], max_tokens: int = 
         
         # Combine chunk summaries
         logger.info(f"Combining {len(valid_summaries)} chunk summaries")
-        combined_summary = await _combine_chunk_summaries(valid_summaries)
+        combined_summary = await _combine_chunk_summaries(valid_summaries, is_specific_endpoint_query)
         
         logger.info(f"Async log analysis completed successfully, final summary length: {len(combined_summary)} characters")
         return combined_summary
@@ -501,7 +665,7 @@ async def summarize_exceptions_async(entries: List[LogEntry], max_tokens: int = 
         return f"Error processing log chunks: {str(e)}"
 
 
-async def _combine_chunk_summaries(chunk_summaries: List[str]) -> str:
+async def _combine_chunk_summaries(chunk_summaries: List[str], is_specific_endpoint_query: bool = False) -> str:
     """
     Combine multiple chunk summaries into a final comprehensive summary.
     
@@ -540,6 +704,12 @@ If exceptions or errors are present across chunks, create a unified table:
 ## API Endpoint Performance (Combined)
 If API endpoints are mentioned across chunks, create a unified performance table:
 
+🚨 **SPECIFIC ENDPOINT QUERY** - Use this format for individual requests:
+| Timestamp | Endpoint | Method | Response Time | Status Code |
+|---|---|---|---|---|
+| [timestamp] | [endpoint] | [method] | [individual time] | [status] |
+
+For general queries, use this format:
 | Endpoint | Method | Avg Response Time | Status | Count |
 |---|---|---|---|---|
 | [endpoint] | [GET/POST/etc] | [avg time] | [status] | [count] |
@@ -636,11 +806,22 @@ If exceptions or errors are present, create a table grouping them:
 ## API Endpoint Performance (if API calls found)
 If API endpoints are mentioned, create a table showing performance:
 
+🚨 **CRITICAL TABLE FORMAT RULE**: If user asks about a specific endpoint, use this format:
+| Timestamp | Endpoint | Method | Response Time | Status Code |
+|---|---|---|---|---|
+| [timestamp] | [specific endpoint] | [method] | [individual time] | [status] |
+| [timestamp] | [specific endpoint] | [method] | [individual time] | [status] |
+
+For general queries (all endpoints), use this format:
 | Endpoint | Method | Avg Response Time | Status | Count |
 |---|---|---|---|---|
 | [endpoint] | [GET/POST/etc] | [avg time] | [status] | [count] |
 
-**CRITICAL INSTRUCTION**: When the user asks specifically about response times for a particular endpoint (e.g., "response times for /generate-content"), show INDIVIDUAL response times for that endpoint, not averages. For example, show "8057.2ms, 4921.5ms, 6234.1ms" instead of "6404.3ms (avg)".
+**CRITICAL INSTRUCTIONS**: 
+1. When the user asks specifically about response times for a particular endpoint (e.g., "response times for /generate-content"), show INDIVIDUAL requests with timestamps, not averages or counts.
+2. If the user asks about a specific endpoint (e.g., "/generate-content"), show ONLY that endpoint in the table. Do NOT include other endpoints.
+3. For specific endpoint queries, use table format: | Timestamp | Endpoint | Method | Response Time | Status Code |
+4. For general queries, use table format: | Endpoint | Method | Avg Response Time | Status | Count |
 
 ## Key Findings
 - List important observations
@@ -666,6 +847,8 @@ CRITICAL REQUIREMENTS:
 - Provide actionable recommendations
 - Ensure the output is a clean markdown string that can be directly rendered
 - **RESPONSE TIME INSTRUCTION**: When user asks specifically about response times for a particular endpoint, show INDIVIDUAL response times (e.g., "8057.2ms, 4921.5ms, 6234.1ms") instead of averages
+- **ENDPOINT FILTERING**: If user asks about a specific endpoint (e.g., "/generate-content"), show ONLY that endpoint in the API Endpoint Performance table. Do NOT include other endpoints
+- **INDIVIDUAL TIMES FOR SPECIFIC ENDPOINTS**: When showing a specific endpoint, display individual response times (e.g., "8057.2ms, 4921.5ms, 6234.1ms") and change table header from "Avg Response Time" to "Response Time"
 """
         
         result = _call_llm(prompt, temperature=0.2, max_tokens=1200, operation_name="log analysis")
