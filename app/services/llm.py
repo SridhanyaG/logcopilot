@@ -349,13 +349,14 @@ NVD Data:
     return _call_llm(prompt, temperature=0.2, max_tokens=600, operation_name="remediation suggestion generation")
 
 
-async def _summarize_chunk_async(chunk: List[LogEntry], chunk_index: int) -> str:
+async def _summarize_chunk_async(chunk: List[LogEntry], chunk_index: int, user_query: str = None) -> str:
     """
     Summarize a single chunk of log entries asynchronously.
     
     Args:
         chunk: List of log entries to summarize
         chunk_index: Index of the chunk for logging purposes
+        user_query: The user's specific query to focus the analysis on
     
     Returns:
         Summary of the chunk
@@ -370,8 +371,15 @@ async def _summarize_chunk_async(chunk: List[LogEntry], chunk_index: int) -> str
     )
     logger.info(f"Chunk {chunk_index} joined log entries, total length: {len(joined)} characters")
     
+    # Add user query context if provided
+    user_query_context = ""
+    if user_query:
+        user_query_context = f"\n**USER QUERY**: {user_query}\n**INSTRUCTION**: Focus your analysis on answering this specific question while providing comprehensive insights.\n"
+    
     prompt = f"""Analyze the log entries below and provide a comprehensive summary in markdown format. The logs may contain exceptions, errors, INFO messages, API responses, or other types of entries.
 
+**SPECIAL INSTRUCTION FOR RESPONSE TIMES**: If the user asks specifically about response times for a particular endpoint (e.g., "response times for /generate-content"), show INDIVIDUAL response times for that endpoint, not averages. For example, show "8057.2ms, 4921.5ms, 6234.1ms" instead of "6404.3ms (avg)".
+{user_query_context}
 REQUIRED OUTPUT FORMAT (return as a single markdown string):
 
 ## Summary
@@ -390,9 +398,11 @@ If exceptions or errors are present, create a table grouping them:
 ## API Endpoint Performance (if API calls found)
 If API endpoints are mentioned, create a table showing performance:
 
-| Endpoint | Method | Response Time | Status | Count |
+| Endpoint | Method | Avg Response Time | Status | Count |
 |---|---|---|---|---|
-| [endpoint] | [GET/POST/etc] | [time] | [status] | [count] |
+| [endpoint] | [GET/POST/etc] | [avg time] | [status] | [count] |
+
+**CRITICAL INSTRUCTION**: When the user asks specifically about response times for a particular endpoint (e.g., "response times for /generate-content"), show INDIVIDUAL response times for that endpoint, not averages. For example, show "8057.2ms, 4921.5ms, 6234.1ms" instead of "6404.3ms (avg)".
 
 ## Key Findings
 - List important observations
@@ -417,6 +427,7 @@ CRITICAL REQUIREMENTS:
 - Group similar exceptions together
 - Provide actionable recommendations
 - Ensure the output is a clean markdown string that can be directly rendered
+- **RESPONSE TIME INSTRUCTION**: When user asks specifically about response times for a particular endpoint, show INDIVIDUAL response times (e.g., "8057.2ms, 4921.5ms, 6234.1ms") instead of averages
 """
     
     try:
@@ -428,13 +439,14 @@ CRITICAL REQUIREMENTS:
         return f"Error analyzing chunk {chunk_index}: {str(e)}"
 
 
-async def summarize_exceptions_async(entries: List[LogEntry], max_tokens: int = 3000) -> str:
+async def summarize_exceptions_async(entries: List[LogEntry], max_tokens: int = 3000, user_query: str = None) -> str:
     """
     Summarize exceptions using async processing with token-based chunking.
     
     Args:
         entries: List of log entries to summarize
         max_tokens: Maximum tokens per chunk (default: 3000)
+        user_query: The user's specific query to focus the analysis on
     
     Returns:
         Combined summary of all chunks
@@ -450,13 +462,13 @@ async def summarize_exceptions_async(entries: List[LogEntry], max_tokens: int = 
     
     if len(chunks) == 1:
         logger.info("Single chunk detected, processing directly")
-        return await _summarize_chunk_async(chunks[0], 0)
+        return await _summarize_chunk_async(chunks[0], 0, user_query)
     
     logger.info(f"Processing {len(chunks)} chunks in parallel")
     
     # Process all chunks in parallel
     chunk_tasks = [
-        _summarize_chunk_async(chunk, i) 
+        _summarize_chunk_async(chunk, i, user_query) 
         for i, chunk in enumerate(chunks)
     ]
     
@@ -528,9 +540,9 @@ If exceptions or errors are present across chunks, create a unified table:
 ## API Endpoint Performance (Combined)
 If API endpoints are mentioned across chunks, create a unified performance table:
 
-| Endpoint | Method | Avg Response Time | Status Distribution | Total Count |
+| Endpoint | Method | Avg Response Time | Status | Count |
 |---|---|---|---|---|
-| [endpoint] | [GET/POST/etc] | [avg time] | [status breakdown] | [total count] |
+| [endpoint] | [GET/POST/etc] | [avg time] | [status] | [count] |
 
 ## Key Findings (Combined)
 - Aggregate important observations from all chunks
@@ -624,9 +636,11 @@ If exceptions or errors are present, create a table grouping them:
 ## API Endpoint Performance (if API calls found)
 If API endpoints are mentioned, create a table showing performance:
 
-| Endpoint | Method | Response Time | Status | Count |
+| Endpoint | Method | Avg Response Time | Status | Count |
 |---|---|---|---|---|
-| [endpoint] | [GET/POST/etc] | [time] | [status] | [count] |
+| [endpoint] | [GET/POST/etc] | [avg time] | [status] | [count] |
+
+**CRITICAL INSTRUCTION**: When the user asks specifically about response times for a particular endpoint (e.g., "response times for /generate-content"), show INDIVIDUAL response times for that endpoint, not averages. For example, show "8057.2ms, 4921.5ms, 6234.1ms" instead of "6404.3ms (avg)".
 
 ## Key Findings
 - List important observations
@@ -651,6 +665,7 @@ CRITICAL REQUIREMENTS:
 - Group similar exceptions together
 - Provide actionable recommendations
 - Ensure the output is a clean markdown string that can be directly rendered
+- **RESPONSE TIME INSTRUCTION**: When user asks specifically about response times for a particular endpoint, show INDIVIDUAL response times (e.g., "8057.2ms, 4921.5ms, 6234.1ms") instead of averages
 """
         
         result = _call_llm(prompt, temperature=0.2, max_tokens=1200, operation_name="log analysis")

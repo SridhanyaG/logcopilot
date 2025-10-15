@@ -3,8 +3,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 
 class Timeframe(BaseModel):
-    hours: Optional[int] = Field(default=None, ge=1, le=48)
-    minutes: Optional[int] = Field(default=None, ge=1, le=2880)  # Max 48 hours in minutes
+    hours: Optional[int] = Field(default=None, ge=0, le=48)
+    minutes: Optional[int] = Field(default=None, ge=0, le=2880)  # Max 48 hours in minutes
     
     def get_total_minutes(self) -> int:
         """Convert timeframe to total minutes"""
@@ -76,6 +76,9 @@ class ExceptionsResponse(BaseModel):
 class NLQueryRequest(BaseModel):
     query: str
     timeframe: Timeframe = Field(default_factory=Timeframe)
+    start_time: Optional[str] = Field(default=None, description="Start time in ISO format")
+    end_time: Optional[str] = Field(default=None, description="End time in ISO format")
+    podname: Optional[str] = Field(default=None, description="Pod/workload name to filter by")
 
 class NLQueryResponse(BaseModel):
     answer: str

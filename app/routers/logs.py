@@ -89,12 +89,43 @@ def exceptions(
 
 @router.post("/nlp", response_model=NLQueryResponse)
 def nlp_summarize(req: NLQueryRequest):
-    logger.info(f"POST /nlp endpoint called with query='{req.query}', hours={req.timeframe.hours}, minutes={req.timeframe.minutes}")
+    # Validate mutual exclusivity for time parameters
+    has_hours = req.timeframe.hours is not None and req.timeframe.hours > 0
+    has_minutes = req.timeframe.minutes is not None and req.timeframe.minutes > 0
+    has_start_time = req.start_time is not None
+    has_end_time = req.end_time is not None
+    
+    # Count how many different time parameter types are provided
+    time_param_count = sum([has_hours, has_minutes, has_start_time or has_end_time])
+    
+    if time_param_count > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Only one time parameter can be provided: hours, minutes, or start_time/end_time pair"
+        )
+    
+    if req.start_time and not req.end_time:
+        raise HTTPException(
+            status_code=400,
+            detail="Both start_time and end_time must be provided together"
+        )
+    
+    if req.end_time and not req.start_time:
+        raise HTTPException(
+            status_code=400,
+            detail="Both start_time and end_time must be provided together"
+        )
+
+    logger.info(f"POST /nlp endpoint called with query='{req.query}', hours={req.timeframe.hours}, minutes={req.timeframe.minutes}, start_time={req.start_time}, end_time={req.end_time}, podname={req.podname}")
+    
     # Use enhanced query system that considers user intent in CloudWatch query generation
     # Use NLP-specific patterns for better analysis
     entries = get_logs_exceptions(
         hours=req.timeframe.hours, 
         minutes=req.timeframe.minutes, 
+        start_time=req.start_time,
+        end_time=req.end_time,
+        podname=req.podname,
         user_query=req.query, 
         use_nlp_patterns=True
     )
@@ -103,7 +134,7 @@ def nlp_summarize(req: NLQueryRequest):
     logger.info("Generating NLP response for logs using async processing")
     try:
         # Use async processing for better performance with large logs
-        answer = asyncio.run(summarize_exceptions_async(entries, max_tokens=3000))
+        answer = asyncio.run(summarize_exceptions_async(entries, max_tokens=3000, user_query=req.query))
         logger.info(f"NLP response generated successfully, length: {len(answer)} characters")
         # Display the markdown response in red color
         log_markdown_red(answer)
